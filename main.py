@@ -3,35 +3,24 @@ Main module to run the algorithms.
 """
 
 from data.generators.synthetic import generate_instance
-from src.utils.conflict_graph import build_conflict_graph
-from src.solvers.backtracking import solver
-from src.constraints.hard import check_h1, check_h2, check_h3
+from src.solvers.cp_solver import solve
 
 
 if __name__ == '__main__':
     # 1. Generate instance
     instance = generate_instance(n_exams=20, n_timeslots=10, n_rooms=4, n_instructors=8, n_students=60)
 
-    # 2. Create conflict graph and print it
-    conflict_graph = build_conflict_graph(exams=instance.exams)
-    print("Conflict Graph:")
-    print(conflict_graph)
+    # 2. Test out the solution
+    solution = solve(instance=instance)
 
-    # 3. Create solver
-    solution = solver(instance=instance)
-
-    # 4. Print out if there's a solution
+    # 3. Check if there is a solution and print the response
     if solution:
-        print(f"Solution: {solution}")
-
-        # 5. Verify with full checks
-        h1 = check_h1(instance=instance, solution=solution, conflict_graph=conflict_graph)
-        h2 = check_h2(instance=instance, solution=solution, conflict_graph=conflict_graph)
-        h3 = check_h3(instance=instance, solution=solution, conflict_graph=conflict_graph)
-
-        if h1 and h2 and h3:
-            print("PASSED")
-        else:
-            print("FAILED")
+        print("=== Solution Found ===\n")
+        print("Exam  | Timeslot | Room")
+        print("------+----------+-----")
+        for exam in instance.exams:
+            t = solution.exam_time[exam.id]
+            r = solution.exam_room[exam.id]
+            print(f"  {exam.id:<4}|    {t:<6}|  {r}")
     else:
-        print("No solution.")
+        print("No solution found.")
