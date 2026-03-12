@@ -182,6 +182,8 @@ def solve(instance: ProblemInstance) -> Solution | None:
     #   UNKNOWN    — solver timed out or hit resource limits
 
     solver = cp_model.CpSolver()
+    # FOR LOGGING
+    # solver.parameters.log_search_progress = True
     status = solver.solve(model)
 
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:

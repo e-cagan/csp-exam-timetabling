@@ -59,14 +59,12 @@ csp-exam-timetabling/
 │   │   └── solution.py         # Solution dataclass with serialization
 │   │
 │   ├── constraints/
-│   │   ├── hard.py             # H1-H6 full and partial constraint checkers
+│   │   ├── hard.py             # H1-H6 independent constraint validators
 │   │   └── soft.py             # S1-S3 penalty functions (planned)
 │   │
 │   ├── solvers/
-│   │   ├── backtracking.py     # Basic backtracking solver
-│   │   ├── propagation.py      # AC-3 & forward checking (Week 3)
-│   │   ├── heuristic.py        # MRV, LCV, degree heuristic (Week 4)
-│   │   └── local_search.py     # Simulated annealing / tabu search (Week 6)
+│   │   ├── backtracking.py     # Baseline: manual backtracking (Week 2)
+│   │   └── cp_solver.py        # Production: OR-Tools CP-SAT solver (Week 3-4)
 │   │
 │   └── utils/
 │       ├── conflict_graph.py   # Student-based exam conflict graph builder
@@ -74,10 +72,40 @@ csp-exam-timetabling/
 │
 ├── tests/                      # Unit tests
 ├── experiments/                # Benchmark results and analysis (Week 8)
-├── main.py                    # Entry point — generate, solve, validate
+├── main.py                     # Entry point — generate, solve, display
 ├── requirements.txt
 └── README.md
 ```
+
+## Two Solver Approach
+
+This project implements two solvers to demonstrate the progression from fundamental CSP algorithms to production-grade constraint programming:
+
+### 1. Manual Backtracking (`src/solvers/backtracking.py`)
+
+A recursive depth-first search written from scratch — no libraries, no black boxes. This serves as both a learning exercise and a baseline for performance comparison.
+
+How it works:
+1. Pick the next unassigned exam (by index order)
+2. Try every (timeslot, room) pair
+3. Run H1, H2, H3 partial checks — if any fails, skip this pair
+4. If all pass, commit the assignment and recurse to the next exam
+5. If recursion fails, undo the assignment (backtrack) and try the next pair
+
+Limitations: exponential worst-case complexity, no propagation, no heuristics. Dense conflict graphs cause the solver to time out. Handles H1-H3 only (timeslot and room assignment).
+
+### 2. OR-Tools CP-SAT (`src/solvers/cp_solver.py`)
+
+A declarative constraint programming solver using Google OR-Tools. Instead of writing the search algorithm, we declare variables and constraints, and the solver handles search strategy, constraint propagation (AC-3, forward checking), and adaptive heuristics (MRV, domain ordering) internally.
+
+How constraints are modeled:
+- **H1** — conflict graph edges become pairwise `!=` constraints on timeslot variables
+- **H2** — `add_allowed_assignments` restricts each exam's room to capacity-sufficient options
+- **H3** — combined `timeslot * num_rooms + room` variable with `add_all_different`
+- **H4 & H5** — reified boolean `same_slot` variables with `only_enforce_if` for conditional constraints
+- **H6** — `sum(boolean_vars) >= required` on invigilator assignment variables
+
+Handles all six hard constraints (H1-H6) including full invigilator assignment.
 
 ## Implementation Details
 
@@ -96,35 +124,13 @@ All dataclasses include `__post_init__` validation to catch invalid data early (
 
 ### Conflict Graph (`src/utils/conflict_graph.py`)
 
-Precomputes which exam pairs share students, stored as an adjacency list (`dict[int, set[int]]`). This avoids recalculating set intersections during backtracking. The graph is undirected and built once in O(n² · s) time where n = number of exams, s = average student set size.
+Precomputes which exam pairs share students, stored as an adjacency list (`dict[int, set[int]]`). This avoids recalculating set intersections during solving. The graph is undirected and built once in O(n² · s) time where n = number of exams, s = average student set size.
 
-The conflict graph serves multiple purposes:
-- H1 constraint checking (both full and partial)
-- Degree heuristic in Week 4 (most-constrained exam first)
-- Arc consistency in Week 3
+Used by both solvers: the backtracking solver uses it for H1 partial checks, and the CP-SAT solver converts its edges into pairwise inequality constraints.
 
-### Constraint Checking (`src/constraints/hard.py`)
+### Independent Validation (`src/constraints/hard.py`)
 
-Each constraint has two variants:
-
-- **Full check** — validates the entire solution after completion. Used for final verification.
-- **Partial check** — validates a single candidate assignment during backtracking. Used at every node of the search tree to prune invalid branches early.
-
-Partial checks are critical for performance: they only examine already-assigned exams, avoiding KeyError on unassigned variables and skipping unnecessary work.
-
-### Backtracking Solver (`src/solvers/backtracking.py`)
-
-A recursive depth-first search over the assignment space:
-
-1. Pick the next unassigned exam (by index order)
-2. Try every (timeslot, room) pair
-3. Run H1, H2, H3 partial checks — if any fails, skip this pair
-4. If all pass, commit the assignment and recurse to the next exam
-5. If recursion succeeds, propagate success upward
-6. If recursion fails, undo the assignment (backtrack) and try the next pair
-7. If no pair works, return failure (trigger backtracking in the caller)
-
-Currently handles timeslot and room assignment (H1, H2, H3). Invigilator assignment (H4, H5, H6) is planned for later phases.
+Each hard constraint has a standalone validation function that checks a complete solution independently of the solver that produced it. This provides a second layer of correctness verification — the solver finds the solution, and the validator confirms it satisfies all constraints.
 
 ### Synthetic Data Generator (`data/generators/synthetic.py`)
 
@@ -157,12 +163,19 @@ python main.py
 ### Example Output
 
 ```
-Conflict Graph:
-{0: {2, 14, 15, 16, 17, 18}, 1: {2, 3, 14, 7}, 2: {0, 1, 10, 15, 17, 18, 19}, ...}
+=== Solution Found ===
 
-Solution: Solution(exam_time={0: 0, 1: 0, 2: 1, 3: 1, ...}, exam_room={0: 0, 1: 1, 2: 0, ...})
+Exam  | Timeslot | Room | Invigilators
+------+----------+------+-------------
+  0   |    4     |  2   | 5
+  1   |    3     |  3   | 0
+  2   |    5     |  1   | 0
+  3   |    4     |  3   | 0
+  ...
 
-PASSED
+Total exams: 20
+Timeslots used: 7/10
+Rooms used: 4/4
 ```
 
 ### Adjusting Parameters
@@ -182,34 +195,37 @@ instance = generate_instance(
 
 ## Current Status
 
-### Completed (Week 2)
+### Completed (Weeks 1-4)
 - CSP formulation with 6 hard constraints and 3 soft constraints
-- Full data model with validation
+- Full data model with validation and serialization
 - Conflict graph construction
 - Synthetic data generator with reproducible seeds
-- Basic backtracking solver (timeslot + room assignment)
-- Full and partial constraint checking for H1, H2, H3
-- Full constraint checking for H4, H5, H6
-- Solution validation pipeline
+- Baseline backtracking solver written from scratch (H1-H3, timeslot + room)
+- Full and partial constraint checking for H1-H6
+- OR-Tools CP-SAT solver with all 6 hard constraints (H1-H6)
+- Complete invigilator assignment via boolean decision variables
+- Reified constraints for conditional logic (same-slot detection)
+- Solution display with exam, timeslot, room, and invigilator mapping
 
 ### Planned
-- **Week 3:** Constraint propagation (AC-3, forward checking)
-- **Week 4:** Heuristics (MRV, degree heuristic, LCV) + large instance testing
+- **Week 4 (remaining):** Large instance testing + performance benchmarks (backtracking vs CP-SAT)
 - **Week 5:** Visualization (calendar/timetable view)
-- **Week 6:** Soft constraints + local search hybrid
+- **Week 6:** Soft constraints (S1-S3) as objective function in CP-SAT
 - **Week 7:** Web or desktop interface
 - **Week 8:** Report + analysis with experimental benchmarks
 - **Week 9:** Final presentation
 
 ## Known Limitations
 
-- **Backtracking without heuristics** is exponential in the worst case. Dense conflict graphs (many shared students) can make the solver impractical. This is expected and will be addressed in Weeks 3-4.
-- **Invigilator assignment** is not yet integrated into the backtracking search. H4, H5, H6 checks exist but are only used for post-solution validation.
-- **Conflict graph density** is sensitive to generator parameters. The student-to-exam ratio must be carefully chosen to produce feasible instances.
+- **Backtracking solver** is exponential in the worst case and only handles H1-H3. Dense conflict graphs make it impractical. It exists as a baseline for comparison and to demonstrate understanding of fundamental CSP algorithms.
+- **Conflict graph density** is sensitive to generator parameters. The student-to-exam ratio must be carefully chosen to produce feasible instances with realistic sparsity.
+- **Soft constraints** (S1-S3) are not yet integrated into the CP-SAT solver. Currently the solver finds any feasible solution without optimization.
+- **Real university data** integration is planned but not yet implemented. The system currently runs on synthetic data.
 
 ## Dependencies
 
 - **Python 3.10+**
+- **ortools** — Google OR-Tools CP-SAT constraint programming solver
 - **pytest** — unit testing
 - **numpy** — statistical analysis for experiments
 - **matplotlib** — performance graphs and visualizations
@@ -218,6 +234,8 @@ instance = generate_instance(
 ## Research Context
 
 This project explores a multi-objective CSP framework for university exam timetabling that balances dual-role PhD instructor conflicts with invigilator workload fairness. The novelty lies in the combination of H4 (PhD dual-role conflict) and S2 (workload fairness), which are rarely modeled together in the exam timetabling literature.
+
+The two-solver approach (manual backtracking vs OR-Tools CP-SAT) enables direct comparison between a naive baseline and a production-grade solver, demonstrating the impact of constraint propagation and heuristics on solving performance.
 
 ## License
 
