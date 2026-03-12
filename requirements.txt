@@ -7,3 +7,6 @@ matplotlib==3.9.2
 
 # Conflict graph görselleştirme (Week 5)
 networkx==3.3
+
+# Or-tools
+ortools
