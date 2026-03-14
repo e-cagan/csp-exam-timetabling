@@ -1,23 +1,25 @@
-# University Exam Timetabling System (CSP)
+# University Exam Timetabling System (CSP/CSOP)
 
-A Constraint Satisfaction Problem (CSP) based system that schedules university exams into timeslots and rooms without conflicts, while considering soft preferences like instructor workload fairness and time preferences.
+A Constraint Satisfaction Optimization Problem (CSOP) based system that schedules university exams into timeslots and rooms without conflicts, while optimizing for instructor workload fairness, time preferences, and scheduling comfort.
 
 ## Problem Definition
 
-Scheduling university exams is a real-world combinatorial optimization problem. Given a set of exams, timeslots, rooms, and instructors, the goal is to find an assignment that satisfies all hard constraints and minimizes penalties from soft constraints.
+Scheduling university exams is a real-world combinatorial optimization problem classified as NP-hard. Given a set of exams, timeslots, rooms, and instructors, the goal is to find an assignment that satisfies all hard constraints and minimizes penalties from soft constraints.
 
 ### CSP Formulation
 
-The problem is formally defined as **CSP = (X, D, C)** where:
+The problem is formally defined as **CSP = (X, D, C)** with an optimization extension **CSOP = (X, D, C, F)** where:
 
 - **Variables (X):** Each exam `e` has three decision variables:
   - `X_e ∈ T` → timeslot assignment
-  - `Y_e ∈ R` → room assignment  
+  - `Y_e ∈ R` → room assignment
   - `Z_{e,i} ∈ {0,1}` → invigilator assignment
 
 - **Domains (D):** All available timeslots, rooms, and instructors.
 
 - **Constraints (C):** Six hard constraints (must be satisfied) and three soft constraints (optimization goals).
+
+- **Objective (F):** Weighted sum of soft constraint penalties to minimize.
 
 ### Hard Constraints
 
@@ -32,17 +34,19 @@ The problem is formally defined as **CSP = (X, D, C)** where:
 
 ### Soft Constraints
 
-| ID | Constraint | Description |
-|----|-----------|-------------|
-| S1 | Instructor Time Preference | Minimize assignments to unwanted timeslots |
-| S2 | Workload Fairness | Minimize variance in invigilation load across instructors |
-| S3 | Avoid Consecutive Invigilation | Penalize back-to-back invigilation assignments |
+| ID | Constraint | OR-Tools Technique | Description |
+|----|-----------|-------------------|-------------|
+| S1 | Instructor Time Preference | `add_element` + `add_min_equality` (AND gate) | Minimize assignments to unwanted timeslots |
+| S2 | Workload Fairness (Min-Max) | `add_max_equality` / `add_min_equality` on loads | Minimize gap between busiest and least busy instructor |
+| S3 | Avoid Consecutive Invigilation | Reified slot-activity detection + AND | Penalize back-to-back invigilation assignments |
 
 ### Multi-Objective Function
 
-`F = w1 * penalty1 + w2 * penalty2 + w3 * penalty3`
+`F = w1 * penalty_S1 + w2 * penalty_S2 + w3 * penalty_S3`
 
-Where `w1`, `w2`, `w3` are tunable weights for each soft constraint.
+Where `w1=1`, `w2=5`, `w3=2` are tunable weights. S2 has the highest weight because fairness is the primary optimization goal of this framework.
+
+**Note on S2:** The original formulation uses variance `Σ(load(i) - L̄)²`, but CP-SAT doesn't support quadratic expressions. We use a Min-Max proxy instead: `minimize(max_load - min_load)`. This is actually a stronger fairness guarantee — it directly prevents any single instructor from being disproportionately burdened.
 
 ## Project Structure
 
@@ -51,7 +55,10 @@ csp-exam-timetabling/
 ├── data/
 │   ├── generators/
 │   │   └── synthetic.py        # Synthetic instance generator
-│   └── instances/              # Generated test instances (JSON)
+│   ├── parsers/
+│   │   └── carter_parser.py    # Carter benchmark dataset parser
+│   └── instances/
+│       └── carter/             # Carter benchmark files (.crs, .stu)
 │
 ├── src/
 │   ├── models/
@@ -64,26 +71,24 @@ csp-exam-timetabling/
 │   │
 │   ├── solvers/
 │   │   ├── backtracking.py     # Baseline: manual backtracking (Week 2)
-│   │   └── cp_solver.py        # Production: OR-Tools CP-SAT solver (Week 3-4)
+│   │   └── cp_solver.py        # Production: OR-Tools CP-SAT with H1-H6 + S1-S3
 │   │
 │   └── utils/
 │       ├── conflict_graph.py   # Student-based exam conflict graph builder
-│       └── io.py               # JSON serialization helpers (planned)
+│       └── io.py               # JSON serialization helpers
 │
 ├── tests/                      # Unit tests
-├── experiments/                # Benchmark results and analysis (Week 8)
-├── main.py                     # Entry point — generate, solve, display
+├── experiments/                # Benchmark results and analysis
+├── main.py                     # Entry point — parse, solve, display, analyze
 ├── requirements.txt
 └── README.md
 ```
 
 ## Two Solver Approach
 
-This project implements two solvers to demonstrate the progression from fundamental CSP algorithms to production-grade constraint programming:
+### 1. Manual Backtracking — Baseline (`src/solvers/backtracking.py`)
 
-### 1. Manual Backtracking (`src/solvers/backtracking.py`)
-
-A recursive depth-first search written from scratch — no libraries, no black boxes. This serves as both a learning exercise and a baseline for performance comparison.
+A recursive depth-first search written from scratch to demonstrate understanding of fundamental CSP algorithms. No external libraries used for the search.
 
 How it works:
 1. Pick the next unassigned exam (by index order)
@@ -92,57 +97,58 @@ How it works:
 4. If all pass, commit the assignment and recurse to the next exam
 5. If recursion fails, undo the assignment (backtrack) and try the next pair
 
-Limitations: exponential worst-case complexity, no propagation, no heuristics. Dense conflict graphs cause the solver to time out. Handles H1-H3 only (timeslot and room assignment).
+Limitations: exponential worst-case complexity, no propagation, no heuristics, handles H1-H3 only. Exists as a baseline for performance comparison.
 
-### 2. OR-Tools CP-SAT (`src/solvers/cp_solver.py`)
+### 2. OR-Tools CP-SAT — Production Solver (`src/solvers/cp_solver.py`)
 
-A declarative constraint programming solver using Google OR-Tools. Instead of writing the search algorithm, we declare variables and constraints, and the solver handles search strategy, constraint propagation (AC-3, forward checking), and adaptive heuristics (MRV, domain ordering) internally.
+A declarative constraint programming solver using Google OR-Tools CP-SAT. Handles all hard constraints (H1-H6) and soft constraints (S1-S3) with optimization.
+
+OR-Tools CP-SAT internally uses:
+- Constraint propagation (AC-3, forward checking) — eliminates infeasible values early
+- Search heuristics (MRV, domain ordering) — picks the most constrained variable first
+- Large Neighborhood Search (LNS) — for optimization after finding feasible solutions
+- Branch and bound — for proving optimality
 
 How constraints are modeled:
-- **H1** — conflict graph edges become pairwise `!=` constraints on timeslot variables
-- **H2** — `add_allowed_assignments` restricts each exam's room to capacity-sufficient options
-- **H3** — combined `timeslot * num_rooms + room` variable with `add_all_different`
-- **H4 & H5** — reified boolean `same_slot` variables with `only_enforce_if` for conditional constraints
-- **H6** — `sum(boolean_vars) >= required` on invigilator assignment variables
+- **H1** — conflict graph edges → pairwise `!=` on timeslot variables
+- **H2** — `add_allowed_assignments` restricts rooms to capacity-sufficient options
+- **H3** — combined `timeslot * num_rooms + room` variable + `add_all_different`
+- **H4 & H5** — reified `same_slot` booleans with `only_enforce_if`
+- **H6** — `sum(boolean_vars) >= required`
+- **S1** — `add_element` for preference lookup + `add_min_equality` as AND gate
+- **S2** — `add_max_equality` / `add_min_equality` on instructor load variables
+- **S3** — per-slot activity detection via reification + AND for consecutive penalty
 
-Handles all six hard constraints (H1-H6) including full invigilator assignment.
+## Benchmark Results
 
-## Implementation Details
+Tested on the Carter benchmark dataset (Toronto instances), the standard benchmark for exam timetabling research.
 
-### Data Model (`src/models/`)
+### hec-s-92 (80 exams, 2823 students, 18 timeslots)
 
-Every mathematical set in the CSP formulation maps directly to a Python dataclass:
+| Configuration | Status | Objective | S1 | S2 (gap) | S3 | Time |
+|--------------|--------|-----------|-----|----------|-----|------|
+| S3 disabled  | OPTIMAL | 0 | 0 | 0 (9-9) | — | 14.3s |
+| S3 enabled   | FEASIBLE | 27 | 12 | 1 (8-7) | 5 | 120s (timeout) |
 
-- **Exam** → represents `E = {e1, ..., en}` with fields: `id`, `student_ids` (set for O(1) intersection), `lecturer_id`, `required_invigilators`
-- **TimeSlot** → represents `T = {t1, ..., tp}` with fields: `id`, `day`, `period` (separate day/period enables consecutive-slot detection for S3)
-- **Room** → represents `R = {r1, ..., rm}` with fields: `id`, `capacity`
-- **Instructor** → represents `I = {i1, ..., ik}` with fields: `id`, `is_phd` (dual-role flag for H4), `preferences` (dict for S1)
-- **ProblemInstance** → aggregates all sets, validates referential integrity (e.g., every exam's lecturer must exist in the instructor list)
-- **Solution** → stores decision variables as dicts: `exam_time`, `exam_room`, `assigned_invigilators`
+**Key findings:**
+- With S3 disabled, the solver achieves **perfect fairness** (all 30 instructors assigned exactly 9 exams) with zero preference violations in 14 seconds.
+- S3 adds significant computational cost (8x slower) due to the large number of reified variables, but still produces near-optimal workload distribution.
+- The Min-Max fairness objective successfully flattens the workload curve across all instructors.
 
-All dataclasses include `__post_init__` validation to catch invalid data early (negative capacities, empty student sets, infeasible slot/room ratios).
+## Carter Benchmark Dataset
 
-### Conflict Graph (`src/utils/conflict_graph.py`)
+The project supports the Toronto benchmark instances, the most widely used benchmark suite in exam timetabling literature.
 
-Precomputes which exam pairs share students, stored as an adjacency list (`dict[int, set[int]]`). This avoids recalculating set intersections during solving. The graph is undirected and built once in O(n² · s) time where n = number of exams, s = average student set size.
+| Instance | Exams | Students | Known Chromatic Bound |
+|----------|-------|----------|-----------------------|
+| hec-s-92 | 80 | 2,823 | 18 |
+| sta-f-83 | 138 | 549 | 13 |
+| yor-f-83 | 180 | 919 | 21 |
+| ear-f-83 | 189 | 1,108 | 24 |
+| uta-s-92 | 638 | 21,329 | 35 |
+| pur-s-93 | 2,419 | 30,032 | 42 |
 
-Used by both solvers: the backtracking solver uses it for H1 partial checks, and the CP-SAT solver converts its edges into pairwise inequality constraints.
-
-### Independent Validation (`src/constraints/hard.py`)
-
-Each hard constraint has a standalone validation function that checks a complete solution independently of the solver that produced it. This provides a second layer of correctness verification — the solver finds the solution, and the validator confirms it satisfies all constraints.
-
-### Synthetic Data Generator (`data/generators/synthetic.py`)
-
-Generates controlled test instances with tunable parameters:
-
-- `n_exams`, `n_timeslots`, `n_rooms`, `n_instructors`, `n_students`
-- `periods_per_day` — for realistic day/period structure
-- `seed` — reproducibility for academic experiments
-
-Student enrollment uses a student-centric approach: each student is randomly assigned to `k` exams, which naturally creates a realistic conflict structure. Edge cases are handled: exams with no students get a random assignment, and at least one PhD instructor is guaranteed.
-
-Key insight from development: the density of the conflict graph is highly sensitive to the student-to-exam ratio. With too few exams or too many enrollments per student, the graph becomes complete (K_n), making the problem infeasible for the given number of timeslots.
+The dataset provides exam definitions (.crs) and student enrollments (.stu). Room and instructor data are synthetically generated since Carter only covers the graph coloring aspect.
 
 ## Usage
 
@@ -154,7 +160,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Run
+### Run with Carter Benchmark
 
 ```bash
 python main.py
@@ -163,64 +169,87 @@ python main.py
 ### Example Output
 
 ```
-=== Solution Found ===
+Loaded Carter Instance: ProblemInstance(exams=80, timeslots=18, rooms=15, instructors=30)
+
+=== Solution Found (OPTIMAL) ===
 
 Exam  | Timeslot | Room | Invigilators
 ------+----------+------+-------------
-  0   |    4     |  2   | 5
-  1   |    3     |  3   | 0
-  2   |    5     |  1   | 0
-  3   |    4     |  3   | 0
+  1   |    10    |  0   | 0, 5, 6, 7, 14, 16, 21, 28, 29
+  2   |    17    |  0   | 0, 4, 7, 9, 11, 12, 13, 15, 21, 25, 26
   ...
 
-Total exams: 20
-Timeslots used: 7/10
-Rooms used: 4/4
+Total exams: 80
+Timeslots used: 18/18
+Rooms used: 6/15
+
+=== Optimization Stats ===
+Objective value: 0.0
+S1 penalty (preference violations): 0
+S2 penalty (workload gap): 0 (max=9, min=9)
+S3 penalty (consecutive invigilation): 0
+Solve time: 14.30s
+
+=== Workload Distribution ===
+  Instructor  0:   9 exams  █████████
+  Instructor  1:   9 exams  █████████
+  ...
+  Instructor 29:   9 exams  █████████
 ```
 
-### Adjusting Parameters
-
-In `main.py`, modify the `generate_instance()` call:
+### Run with Synthetic Data
 
 ```python
+# In main.py, swap to synthetic generator:
 instance = generate_instance(
-    n_exams=20,        # number of exams
-    n_timeslots=10,    # available timeslots
-    n_rooms=4,         # available rooms
-    n_instructors=8,   # teaching staff
-    n_students=60,     # student population
-    seed=42            # for reproducibility
+    n_exams=20, n_timeslots=10, n_rooms=4,
+    n_instructors=8, n_students=60, seed=42
+)
+```
+
+### Solver Configuration
+
+```python
+solution, stats = solve(
+    instance=instance,
+    w1=1,              # S1 preference weight
+    w2=5,              # S2 fairness weight (highest priority)
+    w3=2,              # S3 consecutive penalty weight
+    enable_s3=True,    # disable for faster solving on large instances
+    time_limit=120     # seconds
 )
 ```
 
 ## Current Status
 
-### Completed (Weeks 1-4)
-- CSP formulation with 6 hard constraints and 3 soft constraints
-- Full data model with validation and serialization
-- Conflict graph construction
+### Completed (Weeks 1-6)
+- CSP/CSOP formulation with 6 hard constraints and 3 soft constraints
+- Full data model with validation and serialization (dataclasses with `__post_init__`)
+- Conflict graph construction (adjacency list, O(n²·s) precomputation)
 - Synthetic data generator with reproducible seeds
-- Baseline backtracking solver written from scratch (H1-H3, timeslot + room)
-- Full and partial constraint checking for H1-H6
+- Baseline backtracking solver written from scratch (H1-H3)
+- Independent constraint validation functions for H1-H6
 - OR-Tools CP-SAT solver with all 6 hard constraints (H1-H6)
-- Complete invigilator assignment via boolean decision variables
-- Reified constraints for conditional logic (same-slot detection)
-- Solution display with exam, timeslot, room, and invigilator mapping
+- Soft constraint optimization (S1 preference, S2 Min-Max fairness, S3 consecutive avoidance)
+- Carter benchmark dataset parser and integration
+- Benchmark testing on hec-s-92 (80 exams, 18 timeslots)
+- Workload distribution analysis and statistics reporting
+
+### In Progress
+- **Week 7:** Web interface (React + FastAPI) — teammate working on this
+- **Week 5:** Visualization (timetable grid, workload charts)
 
 ### Planned
-- **Week 4 (remaining):** Large instance testing + performance benchmarks (backtracking vs CP-SAT)
-- **Week 5:** Visualization (calendar/timetable view)
-- **Week 6:** Soft constraints (S1-S3) as objective function in CP-SAT
-- **Week 7:** Web or desktop interface
-- **Week 8:** Report + analysis with experimental benchmarks
+- **Week 4 (remaining):** Large instance testing (sta-f-83, yor-f-83, ear-f-83) + performance table
+- **Week 8:** Report + analysis with experimental benchmarks across all Carter instances
 - **Week 9:** Final presentation
 
 ## Known Limitations
 
-- **Backtracking solver** is exponential in the worst case and only handles H1-H3. Dense conflict graphs make it impractical. It exists as a baseline for comparison and to demonstrate understanding of fundamental CSP algorithms.
-- **Conflict graph density** is sensitive to generator parameters. The student-to-exam ratio must be carefully chosen to produce feasible instances with realistic sparsity.
-- **Soft constraints** (S1-S3) are not yet integrated into the CP-SAT solver. Currently the solver finds any feasible solution without optimization.
-- **Real university data** integration is planned but not yet implemented. The system currently runs on synthetic data.
+- **S3 scalability:** The consecutive invigilation constraint creates O(instructors × consecutive_pairs × exams) boolean variables. For large instances, this can make the solver slow. Use `enable_s3=False` for faster solving.
+- **Backtracking solver** handles only H1-H3 and is exponential. It exists solely as a baseline.
+- **Carter dataset** lacks room and instructor data. These are synthetically generated, which means H2-H6 results are not directly comparable with literature that only evaluates graph coloring.
+- **Optimality gap:** With S3 enabled and tight time limits, the solver may return FEASIBLE (not proven optimal) solutions.
 
 ## Dependencies
 
@@ -233,9 +262,15 @@ instance = generate_instance(
 
 ## Research Context
 
-This project explores a multi-objective CSP framework for university exam timetabling that balances dual-role PhD instructor conflicts with invigilator workload fairness. The novelty lies in the combination of H4 (PhD dual-role conflict) and S2 (workload fairness), which are rarely modeled together in the exam timetabling literature.
+This project explores a fairness-aware CSOP framework for university exam timetabling. The key contributions are:
 
-The two-solver approach (manual backtracking vs OR-Tools CP-SAT) enables direct comparison between a naive baseline and a production-grade solver, demonstrating the impact of constraint propagation and heuristics on solving performance.
+1. **Dual-role conflict modeling (H4):** PhD instructors who both lecture and invigilate are explicitly modeled, preventing scheduling overlaps that make algorithmic schedules impractical.
+
+2. **Min-Max fairness optimization (S2):** Instead of minimizing total system penalty (which can sacrifice individual instructors), we minimize the maximum workload gap, ensuring equitable distribution.
+
+3. **Two-solver comparison:** Manual backtracking baseline vs production-grade CP-SAT, demonstrating the impact of constraint propagation and heuristics.
+
+4. **Real benchmark validation:** Evaluated on Carter (Toronto) benchmark instances, the standard dataset in exam timetabling research.
 
 ## License
 
