@@ -22,96 +22,46 @@ import {
   BarChart3,
   CalendarDays,
   PackageOpen,
+  Target,
+  Timer,
+  XCircle,
+  WifiOff,
 } from "lucide-react";
 
 
 /* ────────────────────────────────────────────────────────────
-   MOCK DATA — mirrors Python domain.py structures exactly.
-
-   KEY ARCHITECTURAL DECISION (Req #3):
-   Day names and period labels are NOW embedded inside the
-   timeslot objects themselves — the frontend has ZERO hardcoded
-   UI label arrays. The backend (or Excel parser) is responsible
-   for providing `dayLabel` and `periodLabel` strings alongside
-   the mathematical (day, period) indices. This means the grid
-   renders correctly for 3-day, 8-day, or 15-day exam periods,
-   with morning/afternoon or custom time formats, without any
-   frontend mapping code.
+   CONFIGURATION
    ──────────────────────────────────────────────────────────── */
 
-function generateMockTimeslots() {
-  const dayLabels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-  const periodDefs = [
-    { label: "09:00 – 10:30", period: 0 },
-    { label: "11:00 – 12:30", period: 1 },
-    { label: "14:00 – 15:30", period: 2 },
-    { label: "16:00 – 17:30", period: 3 },
-  ];
-  const slots = [];
-  let id = 0;
-  for (let d = 0; d < dayLabels.length; d++) {
-    for (const pDef of periodDefs) {
-      slots.push({
-        id: id++,
-        day: d,
-        period: pDef.period,
-        dayLabel: dayLabels[d],       // ← backend provides this
-        periodLabel: pDef.label,      // ← backend provides this
-      });
-    }
+const API_BASE_URL = "http://localhost:8000";
+
+
+/* ────────────────────────────────────────────────────────────
+   DATA BRIDGE — normalizes the backend's Solution.to_dict()
+
+   Python serializes dict keys as strings: { "0": 5, "1": 3 }
+   The grid lookup uses integer keys, so we convert on arrival.
+   ──────────────────────────────────────────────────────────── */
+
+function normalizeSolution(rawSolution) {
+  const exam_time = {};
+  const exam_room = {};
+  const assigned_invigilators = {};
+
+  for (const [eid, tid] of Object.entries(rawSolution.exam_time)) {
+    exam_time[parseInt(eid, 10)] = typeof tid === "string" ? parseInt(tid, 10) : tid;
   }
-  return slots;
+  for (const [eid, rid] of Object.entries(rawSolution.exam_room)) {
+    exam_room[parseInt(eid, 10)] = typeof rid === "string" ? parseInt(rid, 10) : rid;
+  }
+  for (const [eid, ids] of Object.entries(rawSolution.assigned_invigilators)) {
+    assigned_invigilators[parseInt(eid, 10)] = Array.isArray(ids)
+      ? ids.map((id) => (typeof id === "string" ? parseInt(id, 10) : id))
+      : [];
+  }
+
+  return { exam_time, exam_room, assigned_invigilators };
 }
-
-const MOCK_TIMESLOTS = generateMockTimeslots();
-
-const MOCK_ROOMS = [
-  { id: 0, capacity: 120, label: "A-101" },
-  { id: 1, capacity: 80,  label: "A-102" },
-  { id: 2, capacity: 200, label: "B-201" },
-  { id: 3, capacity: 60,  label: "B-202" },
-  { id: 4, capacity: 150, label: "C-301" },
-  { id: 5, capacity: 90,  label: "C-302" },
-];
-
-const MOCK_INSTRUCTORS = [
-  { id: 0, is_phd: true,  name: "Prof. Yılmaz" },
-  { id: 1, is_phd: true,  name: "Prof. Kaya" },
-  { id: 2, is_phd: false, name: "RA. Demir" },
-  { id: 3, is_phd: true,  name: "Prof. Çelik" },
-  { id: 4, is_phd: false, name: "RA. Arslan" },
-  { id: 5, is_phd: true,  name: "Prof. Şahin" },
-  { id: 6, is_phd: false, name: "RA. Aydın" },
-  { id: 7, is_phd: true,  name: "Prof. Öztürk" },
-];
-
-const EXAM_CATALOG = [
-  { id: 0,  code: "CS101",   name: "Intro to CS",       studentCount: 95,  lecturer_id: 0, required_invigilators: 2 },
-  { id: 1,  code: "CS201",   name: "Data Structures",   studentCount: 72,  lecturer_id: 1, required_invigilators: 2 },
-  { id: 2,  code: "CS301",   name: "Algorithms",        studentCount: 58,  lecturer_id: 3, required_invigilators: 1 },
-  { id: 3,  code: "CS401",   name: "Operating Systems", studentCount: 45,  lecturer_id: 5, required_invigilators: 1 },
-  { id: 4,  code: "MATH101", name: "Calculus I",        studentCount: 180, lecturer_id: 7, required_invigilators: 3 },
-  { id: 5,  code: "MATH201", name: "Linear Algebra",    studentCount: 110, lecturer_id: 7, required_invigilators: 2 },
-  { id: 6,  code: "PHYS101", name: "Physics I",         studentCount: 150, lecturer_id: 5, required_invigilators: 2 },
-  { id: 7,  code: "ENG101",  name: "Academic English",  studentCount: 60,  lecturer_id: 3, required_invigilators: 1 },
-  { id: 8,  code: "CS350",   name: "Database Systems",  studentCount: 65,  lecturer_id: 1, required_invigilators: 1 },
-  { id: 9,  code: "CS450",   name: "Machine Learning",  studentCount: 40,  lecturer_id: 0, required_invigilators: 1 },
-  { id: 10, code: "MATH301", name: "Probability",       studentCount: 85,  lecturer_id: 7, required_invigilators: 2 },
-  { id: 11, code: "CS499",   name: "Capstone Project",  studentCount: 25,  lecturer_id: 3, required_invigilators: 1 },
-];
-
-// solution.py output: exam_time, exam_room, assigned_invigilators
-const MOCK_SOLUTION = {
-  exam_time: { 0: 0, 1: 1, 2: 4, 3: 5, 4: 2, 5: 8, 6: 3, 7: 9, 8: 12, 9: 13, 10: 6 },
-  exam_room: { 0: 0, 1: 1, 2: 3, 3: 4, 4: 2, 5: 0, 6: 2, 7: 5, 8: 1, 9: 3, 10: 4 },
-  assigned_invigilators: {
-    0: [2, 4], 1: [0, 6], 2: [4], 3: [2], 4: [1, 4, 6],
-    5: [2, 3], 6: [0, 6], 7: [4], 8: [6], 9: [2], 10: [1, 4],
-  },
-};
-
-// Exam 11 (CS499) is intentionally left unassigned for demo
-const UNASSIGNED_EXAM_IDS = [11];
 
 
 /* ────────────────────────────────────────────────────────────
@@ -129,7 +79,6 @@ function buildDayMap(timeslots) {
   sortedDays.forEach((d) => dayMap[d].periods.sort((a, b) => a.period - b.period));
   return { dayMap, sortedDays };
 }
-
 
 const PASTEL_HUES = [
   "bg-blue-50 border-blue-300 text-blue-900",
@@ -152,32 +101,39 @@ function examColor(examId) {
 
 
 /* ────────────────────────────────────────────────────────────
-   SOLVER SIMULATION (Req #4)
-   Async Promise with random 3–8s duration.
-   The frontend has NO idea how long this takes — it must treat
-   it as a genuine unpredictable async operation.
-   ──────────────────────────────────────────────────────────── */
-
-function simulateSolverRequest() {
-  return new Promise((resolve) => {
-    const duration = 3000 + Math.random() * 5000;
-    setTimeout(() => {
-      resolve({
-        solution: MOCK_SOLUTION,
-        unassigned: UNASSIGNED_EXAM_IDS,
-        hardViolations: 0,
-        softPenalty: 14,
-      });
-    }, duration);
-  });
-}
-
-
-/* ────────────────────────────────────────────────────────────
    COMPONENTS
    ──────────────────────────────────────────────────────────── */
 
-function ImportModal({ isOpen, onClose, onImport }) {
+function Toast({ toast, onDismiss }) {
+  if (!toast) return null;
+
+  const styles = {
+    error:   { bg: "bg-red-50 border-red-200",    icon: <XCircle size={18} className="text-red-500" />,    text: "text-red-800",    sub: "text-red-600" },
+    warning: { bg: "bg-amber-50 border-amber-200", icon: <AlertTriangle size={18} className="text-amber-500" />, text: "text-amber-800", sub: "text-amber-600" },
+    success: { bg: "bg-emerald-50 border-emerald-200", icon: <CheckCircle2 size={18} className="text-emerald-500" />, text: "text-emerald-800", sub: "text-emerald-600" },
+    network: { bg: "bg-slate-100 border-slate-300", icon: <WifiOff size={18} className="text-slate-500" />, text: "text-slate-800", sub: "text-slate-600" },
+  };
+
+  const s = styles[toast.type] || styles.error;
+
+  return (
+    <div className="fixed top-20 right-4 sm:right-6 lg:right-10 z-40" style={{ animation: "toastIn .35s cubic-bezier(.16,1,.3,1)" }}>
+      <div className={`flex items-start gap-3 px-4 py-3.5 rounded-xl border shadow-lg w-[380px] max-w-[calc(100vw-2rem)] ${s.bg}`}>
+        <div className="mt-0.5 shrink-0">{s.icon}</div>
+        <div className="flex-1 min-w-0">
+          <p className={`text-sm font-semibold ${s.text}`}>{toast.title}</p>
+          {toast.message && <p className={`text-xs mt-0.5 ${s.sub}`}>{toast.message}</p>}
+        </div>
+        <button onClick={onDismiss} className="p-1 rounded-md hover:bg-black/5 transition-colors shrink-0">
+          <X size={14} className="text-slate-400" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+function ImportModal({ isOpen, onClose, onImport, isParsing }) {
   const [isDragging, setIsDragging] = useState(false);
 
   if (!isOpen) return null;
@@ -230,11 +186,9 @@ function ImportModal({ isOpen, onClose, onImport }) {
             <div className="flex gap-2">
               <Info size={15} className="text-amber-600 mt-0.5 shrink-0" />
               <div className="text-xs text-amber-800 leading-relaxed">
-                <p className="font-medium mb-0.5">Expected sheets:</p>
-                <p><strong>Exams</strong> — id, student_ids, lecturer_id, required_invigilators</p>
-                <p><strong>TimeSlots</strong> — id, day, period, dayLabel, periodLabel</p>
-                <p><strong>Rooms</strong> — id, capacity, label</p>
-                <p><strong>Instructors</strong> — id, is_phd, name, preferences</p>
+                <p className="font-medium mb-0.5">Carter benchmark datasets supported:</p>
+                <p>Place <strong>.crs</strong> and <strong>.stu</strong> files in the backend's <code className="bg-amber-100 px-1 rounded">data/instances/carter/</code> directory.</p>
+                <p className="mt-1">Currently configured: <strong>hec-s-92-2</strong></p>
               </div>
             </div>
           </div>
@@ -244,10 +198,12 @@ function ImportModal({ isOpen, onClose, onImport }) {
               Cancel
             </button>
             <button
-              onClick={() => { onImport(); onClose(); }}
-              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+              onClick={onImport}
+              disabled={isParsing}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Upload &amp; Parse
+              {isParsing && <Loader2 size={14} className="animate-spin" />}
+              {isParsing ? "Parsing…" : "Upload & Parse"}
             </button>
           </div>
         </div>
@@ -257,8 +213,6 @@ function ImportModal({ isOpen, onClose, onImport }) {
 }
 
 
-/* ── Indeterminate Solver Overlay (Req #4) ─────────────────── */
-
 function SolverOverlay({ elapsedSeconds, stage }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm">
@@ -266,7 +220,6 @@ function SolverOverlay({ elapsedSeconds, stage }) {
         className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center"
         style={{ animation: "modalIn .3s cubic-bezier(.16,1,.3,1)" }}
       >
-        {/* Indeterminate spinning ring — no percentage */}
         <div className="relative w-20 h-20 mx-auto mb-5">
           <svg className="w-20 h-20 indeterminate-spin" viewBox="0 0 80 80">
             <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="5" />
@@ -312,10 +265,13 @@ function StatCard({ icon: Icon, label, value, accent }) {
     emerald: "bg-emerald-50 text-emerald-600",
     amber:   "bg-amber-50 text-amber-600",
     violet:  "bg-violet-50 text-violet-600",
+    rose:    "bg-rose-50 text-rose-600",
+    cyan:    "bg-cyan-50 text-cyan-600",
+    slate:   "bg-slate-100 text-slate-600",
   };
   return (
     <div className="flex items-center gap-3 p-3.5 rounded-xl bg-white border border-slate-200/80 shadow-sm">
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${accents[accent]}`}>
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${accents[accent] || accents.slate}`}>
         <Icon size={18} />
       </div>
       <div>
@@ -344,12 +300,9 @@ function ExamChip({ exam, instructors, invigilatorIds }) {
 }
 
 
-/* ── Timetable Grid — 100% dynamic headers from timeslot data (Req #3) ─ */
-
 function TimetableGrid({ solution, timeslots, rooms, exams, instructors }) {
   const { dayMap, sortedDays } = buildDayMap(timeslots);
 
-  // Build lookup: `${roomId}-${timeslotId}` → examId
   const cellLookup = {};
   Object.entries(solution.exam_time).forEach(([eid, tid]) => {
     const rid = solution.exam_room[eid];
@@ -360,7 +313,6 @@ function TimetableGrid({ solution, timeslots, rooms, exams, instructors }) {
     <div className="overflow-x-auto rounded-xl border border-slate-200/80 shadow-sm bg-white">
       <table className="w-full border-collapse min-w-[900px]">
         <thead>
-          {/* Day header row — label pulled from dayMap[day].label */}
           <tr className="bg-slate-800">
             <th className="sticky left-0 z-20 bg-slate-800 w-28 min-w-28 px-3 py-2.5 text-left text-[11px] font-semibold text-slate-300 uppercase tracking-wider border-r border-slate-700">
               Room
@@ -378,7 +330,6 @@ function TimetableGrid({ solution, timeslots, rooms, exams, instructors }) {
               </th>
             ))}
           </tr>
-          {/* Period sub-header — label pulled from each timeslot's periodLabel */}
           <tr className="bg-slate-700">
             <th className="sticky left-0 z-20 bg-slate-700 w-28 min-w-28 px-3 py-2 border-r border-slate-600" />
             {sortedDays.map((day) =>
@@ -493,11 +444,13 @@ function ConstraintBadge({ hardViolations, softPenalty }) {
 
 export default function App() {
   const [importOpen, setImportOpen] = useState(false);
+  const [isParsing, setIsParsing] = useState(false);
 
-  // ── Problem instance state: null = nothing imported yet (Req #2) ──
+  // ── Problem instance: null = nothing loaded yet ──
+  // Hydrated entirely from backend /parse or /solve responses.
   const [problemData, setProblemData] = useState(null);
 
-  // ── Solver state (Req #4) ──
+  // ── Solver state ──
   const [solverRunning, setSolverRunning] = useState(false);
   const [solverStage, setSolverStage] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -505,37 +458,101 @@ export default function App() {
   const elapsedRef = useRef(null);
   const stageRef = useRef(null);
 
-  const dataLoaded = problemData !== null;
-  const hasSolution = solverResult !== null;
+  // ── Toast state ──
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
 
-  // ── Simulate file import → populates problemData (Req #2) ──
-  const handleImport = useCallback(() => {
-    setProblemData({
-      exams: EXAM_CATALOG,
-      timeslots: MOCK_TIMESLOTS,
-      rooms: MOCK_ROOMS,
-      instructors: MOCK_INSTRUCTORS,
-    });
-    setSolverResult(null);
+  const dataLoaded = problemData !== null;
+  const hasSolution = solverResult !== null && !solverResult.failed;
+
+  // ── Toast helpers ──
+  const showToast = useCallback((type, title, message, duration = 6000) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ type, title, message });
+    toastTimerRef.current = setTimeout(() => setToast(null), duration);
   }, []);
 
-  // ── Indeterminate solver: async/await + elapsed timer + rotating stages (Req #4) ──
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(null);
+  }, []);
+
+  /* ──────────────────────────────────────────────────────────
+     IMPORT: calls POST /parse → hydrates problemData
+     This is the ONLY way data enters the frontend.
+     ────────────────────────────────────────────────────────── */
+
+  const handleImport = useCallback(async () => {
+    setIsParsing(true);
+    dismissToast();
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/parse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),  // uses backend defaults (hec-s-92-2)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(
+          response.status === 404
+            ? `Dataset files not found. ${errorText}`
+            : `Server returned ${response.status}: ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+
+      if (!data.instance) {
+        throw new Error("Backend returned no instance data.");
+      }
+
+      setProblemData(data.instance);
+      setSolverResult(null);
+      setImportOpen(false);
+
+      const inst = data.instance;
+      showToast(
+        "success",
+        "Data Imported",
+        `Loaded ${inst.exams.length} exams, ${inst.rooms.length} rooms, ${inst.timeslots.length} timeslots, ${inst.instructors.length} instructors.`
+      );
+
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError && err.message === "Failed to fetch";
+      if (isNetworkError) {
+        showToast("network", "Server Unreachable", `Could not connect to ${API_BASE_URL}. Make sure the backend is running.`, 10000);
+      } else {
+        showToast("error", "Import Failed", err.message || "An unexpected error occurred.", 10000);
+      }
+    } finally {
+      setIsParsing(false);
+    }
+  }, [dismissToast, showToast]);
+
+  /* ──────────────────────────────────────────────────────────
+     SOLVER: calls POST /solve → gets instance + solution + stats
+     The response includes the full instance so problemData
+     is always in sync with the solver's actual ProblemInstance.
+     No payload reconstruction — just config.
+     ────────────────────────────────────────────────────────── */
+
   const runSolver = useCallback(async () => {
     if (!dataLoaded) return;
 
     setSolverRunning(true);
     setSolverResult(null);
     setElapsedSeconds(0);
+    dismissToast();
 
-    // Elapsed-seconds tick
     const tickInterval = setInterval(() => {
       setElapsedSeconds((s) => s + 1);
     }, 1000);
     elapsedRef.current = tickInterval;
 
-    // Rotating stage labels — cycles endlessly until promise resolves
     const stages = [
-      "Parsing problem instance…",
+      "Sending problem to solver…",
       "Building constraint graph…",
       "Applying arc consistency (AC-3)…",
       "Running backtracking search…",
@@ -552,10 +569,76 @@ export default function App() {
     }, 900);
     stageRef.current = stageInterval;
 
-    // Await the actual (simulated) backend call — unpredictable duration
     try {
-      const result = await simulateSolverRequest();
-      setSolverResult(result);
+      const response = await fetch(`${API_BASE_URL}/solve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),  // uses backend defaults
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(
+          response.status === 422
+            ? `Validation error: ${errorText || "check input data format."}`
+            : `Server returned ${response.status}${errorText ? `: ${errorText}` : ""}`
+        );
+      }
+
+      const data = await response.json();
+
+      // ── Always sync problemData from the solver's actual instance ──
+      if (data.instance) {
+        setProblemData(data.instance);
+      }
+
+      // ── Handle failed / infeasible ──
+      if (data.status === "failed" || data.status === "infeasible") {
+        setSolverResult({ failed: true });
+        showToast(
+          "error",
+          "Solver Failed",
+          data.message || "Could not find a feasible solution.",
+          10000
+        );
+        return;
+      }
+
+      // ── Normalize the solution through the data bridge ──
+      const normalizedSolution = normalizeSolution(data.solution);
+
+      // Determine unassigned exams using the BACKEND's instance (not stale state)
+      const instanceExams = data.instance?.exams || problemData?.exams || [];
+      const placedIds = new Set(Object.keys(normalizedSolution.exam_time).map(Number));
+      const unassigned = instanceExams
+        .map((e) => e.id)
+        .filter((id) => !placedIds.has(id));
+
+      const stats = data.stats || {};
+
+      setSolverResult({
+        failed: false,
+        solution: normalizedSolution,
+        unassigned,
+        hardViolations: stats.hard_violations ?? 0,
+        softPenalty: stats.soft_penalty ?? stats.penalty ?? 0,
+        objective: stats.objective ?? null,
+        solveTime: stats.solve_time ?? null,
+      });
+
+      const violationMsg = (stats.hard_violations ?? 0) === 0
+        ? "All hard constraints satisfied."
+        : `${stats.hard_violations} hard constraint violation(s) detected.`;
+      showToast("success", "Solution Found", violationMsg);
+
+    } catch (err) {
+      setSolverResult(null);
+      const isNetworkError = err instanceof TypeError && err.message === "Failed to fetch";
+      if (isNetworkError) {
+        showToast("network", "Server Unreachable", `Could not connect to ${API_BASE_URL}. Make sure the backend is running.`, 10000);
+      } else {
+        showToast("error", "Solver Error", err.message || "An unexpected error occurred.", 10000);
+      }
     } finally {
       clearInterval(tickInterval);
       clearInterval(stageInterval);
@@ -563,17 +646,18 @@ export default function App() {
       stageRef.current = null;
       setSolverRunning(false);
     }
-  }, [dataLoaded]);
+  }, [dataLoaded, problemData, dismissToast, showToast]);
 
-  // Cleanup intervals on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (elapsedRef.current) clearInterval(elapsedRef.current);
       if (stageRef.current) clearInterval(stageRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, []);
 
-  // ── Derived display values (all from problemData, never hardcoded) ──
+  // ── Derived display values ──
   const numDays = dataLoaded
     ? new Set(problemData.timeslots.map((ts) => ts.day)).size
     : 0;
@@ -591,6 +675,7 @@ export default function App() {
         body { font-family: 'DM Sans', system-ui, sans-serif; background: #f1f5f9; min-height: 100vh; }
         code, .font-mono { font-family: 'JetBrains Mono', monospace; }
         @keyframes modalIn { from { opacity:0; transform: scale(.96) translateY(8px); } to { opacity:1; transform: scale(1) translateY(0); } }
+        @keyframes toastIn { from { opacity:0; transform: translateX(20px); } to { opacity:1; transform: translateX(0); } }
         @keyframes pulse { 0%,100%{ opacity:.3; transform:scale(.8); } 50%{ opacity:1; transform:scale(1.1); } }
         @keyframes fadeUp { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
         @keyframes indeterminateSpin { 0%{ transform:rotate(0deg); } 100%{ transform:rotate(360deg); } }
@@ -606,7 +691,7 @@ export default function App() {
       `}</style>
 
       <div className="min-h-screen bg-slate-100">
-        {/* ── HEADER — full viewport width (Req #1) ── */}
+        {/* ── HEADER ── */}
         <header className="bg-white border-b border-slate-200 shadow-sm sticky top-0 z-30">
           <div className="w-full px-4 sm:px-6 lg:px-10">
             <div className="flex items-center justify-between h-16">
@@ -624,7 +709,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ── ACTION BUTTONS ── */}
               <div className="flex items-center gap-2.5">
                 <button
                   onClick={() => setImportOpen(true)}
@@ -655,10 +739,10 @@ export default function App() {
           </div>
         </header>
 
-        {/* ── MAIN CONTENT — full viewport width (Req #1) ── */}
+        {/* ── MAIN CONTENT ── */}
         <main className="w-full px-4 sm:px-6 lg:px-10 py-6 space-y-5">
 
-          {/* ── STAT CARDS — show "—" when no data loaded (Req #2) ── */}
+          {/* ── INSTANCE STAT CARDS ── */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 anim-fade-up">
             <StatCard icon={BookOpen} label="Total Exams"   value={dataLoaded ? totalExams : "—"} accent="blue" />
             <StatCard icon={DoorOpen} label="Rooms"         value={dataLoaded ? problemData.rooms.length : "—"} accent="emerald" />
@@ -666,7 +750,37 @@ export default function App() {
             <StatCard icon={Users}    label="Instructors"   value={dataLoaded ? problemData.instructors.length : "—"} accent="violet" />
           </div>
 
-          {/* ── EMPTY STATE — no data imported yet (Req #2) ── */}
+          {/* ── SOLVER STATS ROW ── */}
+          {hasSolution && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 anim-fade-up">
+              <StatCard
+                icon={Target}
+                label="Objective"
+                value={solverResult.objective != null ? solverResult.objective : "—"}
+                accent="cyan"
+              />
+              <StatCard
+                icon={AlertTriangle}
+                label="Hard Violations"
+                value={solverResult.hardViolations}
+                accent={solverResult.hardViolations === 0 ? "emerald" : "rose"}
+              />
+              <StatCard
+                icon={BarChart3}
+                label="Soft Penalty"
+                value={solverResult.softPenalty}
+                accent="amber"
+              />
+              <StatCard
+                icon={Timer}
+                label="Solve Time"
+                value={solverResult.solveTime != null ? `${solverResult.solveTime.toFixed(2)}s` : `${elapsedSeconds}s`}
+                accent="violet"
+              />
+            </div>
+          )}
+
+          {/* ── EMPTY STATE ── */}
           {!dataLoaded && (
             <div className="anim-fade-up anim-d1 flex flex-col items-center justify-center py-20 rounded-xl bg-white border border-dashed border-slate-300 shadow-sm">
               <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center mb-4">
@@ -681,12 +795,12 @@ export default function App() {
                 className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
               >
                 <Upload size={15} />
-                Import Excel / CSV
+                Import Dataset
               </button>
             </div>
           )}
 
-          {/* ── READY STATE — data loaded, awaiting solver ── */}
+          {/* ── READY STATE ── */}
           {dataLoaded && !hasSolution && !solverRunning && (
             <div className="anim-fade-up anim-d1 flex flex-col items-center justify-center py-16 rounded-xl bg-white border border-slate-200 shadow-sm">
               <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center mb-4">
@@ -702,7 +816,6 @@ export default function App() {
           {/* ── SOLUTION VIEW ── */}
           {hasSolution && (
             <>
-              {/* ── VALIDATION ── */}
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 anim-fade-up anim-d1">
                 <ConstraintBadge hardViolations={solverResult.hardViolations} softPenalty={solverResult.softPenalty} />
                 <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-50 border border-blue-200 shadow-sm">
@@ -713,7 +826,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ── TIMETABLE ── */}
               <div className="anim-fade-up anim-d2">
                 <div className="flex items-center gap-2 mb-3">
                   <h2 className="text-sm font-semibold text-slate-800">Schedule Grid</h2>
@@ -730,12 +842,10 @@ export default function App() {
                 />
               </div>
 
-              {/* ── UNASSIGNED ── */}
               <div className="anim-fade-up anim-d3">
                 <UnassignedPool examIds={solverResult.unassigned} exams={problemData.exams} />
               </div>
 
-              {/* ── LEGEND ── */}
               <div className="anim-fade-up anim-d4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3">Exam Legend</h3>
                 <div className="flex flex-wrap gap-2">
@@ -760,9 +870,9 @@ export default function App() {
         </main>
       </div>
 
-      {/* ── MODALS / OVERLAYS ── */}
-      <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} onImport={handleImport} />
+      <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} onImport={handleImport} isParsing={isParsing} />
       {solverRunning && <SolverOverlay elapsedSeconds={elapsedSeconds} stage={solverStage} />}
+      <Toast toast={toast} onDismiss={dismissToast} />
     </>
   );
 }
