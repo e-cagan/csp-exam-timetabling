@@ -21,7 +21,8 @@ if __name__ == '__main__':
     print(f"Loaded Carter Instance: {instance}")
 
     # Solve with soft constraints
-    solution, stats = solve(instance=instance, enable_s3=False, time_limit=120)
+    # S3 disabled for speed, S4 enabled for student fairness
+    solution, stats = solve(instance=instance, enable_s3=False, enable_s4=True, time_limit=120)
 
     # Display results
     if solution:
@@ -46,6 +47,7 @@ if __name__ == '__main__':
         print(f"S1 penalty (preference violations): {stats['s1_penalty']}")
         print(f"S2 penalty (workload gap): {stats['s2_penalty']} (max={stats['max_load']}, min={stats['min_load']})")
         print(f"S3 penalty (consecutive invigilation): {stats['s3_penalty']}")
+        print(f"S4 penalty (student consecutive days): {stats['s4_penalty']}")
         print(f"Solve time: {stats['wall_time']:.2f}s")
 
         # Workload distribution
