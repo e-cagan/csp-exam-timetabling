@@ -199,25 +199,25 @@ python main.py
 ```
 
 ### Example Output
-
 ```
 Loaded Carter Instance: ProblemInstance(exams=80, timeslots=18, rooms=15, instructors=30)
 
 === Solution Found (FEASIBLE) ===
 
-Exam  | Timeslot | Room | Invigilators
-------+----------+------+-------------
-  1   |    1     |  4   | 4, 14, 15, 17, 19, 20, 24, 26, 29
-  2   |    17    |  8   | 2, 7, 14, 15, 16, 19, 21, 24, 25, 26, 27
+Exam  | Timeslot | Room | Students | Invigilators
+------+----------+------+----------+-------------
+  1   |    8     |  3   |     367  | 2, 6, 7, 20, 21, 23, 24, 25, 29
+  2   |    1     |  8   |     469  | 5, 6, 11, 12, 13, 14, 15, 17, 19, 24, 29
+  3   |    16    |  0   |     245  | 16, 17, 18, 20, 21, 27
   ...
 
 === Optimization Stats ===
-Objective value: 15457.0
-S1 penalty (preference violations): 1
+Objective value: 14451.0
+S1 penalty (preference violations): 0
 S2 penalty (workload gap): 0 (max=9, min=9)
 S3 penalty (consecutive invigilation): 0
-S4 penalty (student consecutive days): 5152
-Solve time: 120.14s
+S4 penalty (student consecutive days): 4817
+Solve time: 120.11s
 
 === Workload Distribution ===
   Instructor  0:   9 exams  █████████

@@ -28,14 +28,15 @@ if __name__ == '__main__':
     if solution:
         print(f"\n=== Solution Found ({stats['status']}) ===\n")
 
-        print("Exam  | Timeslot | Room | Invigilators")
-        print("------+----------+------+-------------")
+        print("Exam  | Timeslot | Room | Students | Invigilators")
+        print("------+----------+------+----------+-------------")
         for exam in instance.exams:
             t = solution.exam_time[exam.id]
             r = solution.exam_room[exam.id]
+            s = len(exam.student_ids)
             invig = solution.assigned_invigilators.get(exam.id, set())
             invig_str = ", ".join(str(i) for i in sorted(invig)) if invig else "none"
-            print(f"  {exam.id:<4}|    {t:<6}|  {r:<4}| {invig_str}")
+            print(f"  {exam.id:<4}|    {t:<6}|  {r:<4}|  {s:>6}  | {invig_str}")
 
         print(f"\nTotal exams: {len(instance.exams)}")
         print(f"Timeslots used: {len(set(solution.exam_time.values()))}/{len(instance.timeslots)}")
