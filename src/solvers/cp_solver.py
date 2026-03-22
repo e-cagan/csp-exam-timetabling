@@ -3,11 +3,11 @@ CP-SAT based solver for the University Exam Timetabling Problem.
 
 Uses Google OR-Tools' CP-SAT solver to find optimal exam schedules
 that satisfy all six hard constraints (H1-H6) while minimizing
-soft constraint penalties (S1-S3).
+soft constraint penalties (S1-S4).
 
 This is a Constraint Satisfaction Optimization Problem (CSOP):
 - Hard constraints (H1-H6): must be satisfied — modeled with model.add()
-- Soft constraints (S1-S3): should be minimized — modeled with model.minimize()
+- Soft constraints (S1-S4): should be minimized — modeled with model.minimize()
 
 OR-Tools CP-SAT internally handles:
 - Constraint propagation (AC-3, forward checking)
@@ -27,7 +27,10 @@ Soft constraint summary:
   S1 — Instructor Time Preference      (element constraint + AND for penalty)
   S2 — Workload Fairness               (min-max load balancing)
   S3 — Avoid Consecutive Invigilation   (reified slot-activity detection + AND)
+  S4 — Student Consecutive Day Gap      (abs day difference + reified penalty)
 """
+
+from collections import defaultdict
 
 from ortools.sat.python import cp_model
 
@@ -41,7 +44,9 @@ def solve(
     w1: int = 1,
     w2: int = 5,
     w3: int = 2,
+    w4: int = 3,
     enable_s3: bool = True,
+    enable_s4: bool = True,
     time_limit: int = 120
 ) -> tuple[Solution | None, dict]:
     """
@@ -52,7 +57,9 @@ def solve(
         w1: Weight for S1 (instructor preference penalty).
         w2: Weight for S2 (workload fairness penalty).
         w3: Weight for S3 (consecutive invigilation penalty).
-        enable_s3: Whether to include S3 in the objective (can be slow for large instances).
+        w4: Weight for S4 (student consecutive day penalty).
+        enable_s3: Whether to include S3 (can be slow for large instances).
+        enable_s4: Whether to include S4 (can be slow for many students).
         time_limit: Maximum solver time in seconds.
 
     Returns:
@@ -62,7 +69,6 @@ def solve(
     model = cp_model.CpModel()
 
     # ==================== Conflict Graph ====================
-    # Precompute which exam pairs share students (used for H1).
     conflict_graph = build_conflict_graph(exams=instance.exams)
 
     # ==================== Decision Variables ====================
@@ -192,10 +198,8 @@ def solve(
     # Original: penalty2 = Σ_i (load(i) - L̄)²
     # CP-SAT proxy: minimize (max_load - min_load)
     #
-    # Variance requires quadratics which CP-SAT doesn't support natively.
-    # Min-Max fairness is actually stronger — it directly prevents any single
-    # instructor from being disproportionately burdened while others are idle.
-    # This aligns with the Min-Max fairness approach from the paper.
+    # Min-Max fairness directly prevents any single instructor from being
+    # disproportionately burdened while others are idle.
 
     loads = []
     for inst in instance.instructors:
@@ -221,10 +225,6 @@ def solve(
     #   2) Check if instructor is "active" in late slot
     #   3) Penalty = 1 if active in BOTH (AND via min)
     #
-    # "Active in slot t" = OR over all exams of (exam_in_slot_t AND invigilator_assigned)
-    #   - Per-exam AND: add_min_equality(both, [is_in_slot, invigilator])
-    #   - Slot-level OR: add_max_equality(active, [both_for_each_exam])
-    #
     # WARNING: Creates O(instructors × consecutive_pairs × exams) variables.
     # For large instances, disable via enable_s3=False.
 
@@ -243,7 +243,6 @@ def solve(
                 active_late_list = []
 
                 for exam in instance.exams:
-                    # Early slot: is exam here AND is instructor assigned?
                     is_in_early = model.new_bool_var(f"s3_ie_{exam.id}_{inst.id}_{t_early}")
                     model.add(exam_times[exam.id] == t_early).only_enforce_if(is_in_early)
                     model.add(exam_times[exam.id] != t_early).only_enforce_if(is_in_early.negated())
@@ -252,7 +251,6 @@ def solve(
                     model.add_min_equality(both_early, [is_in_early, invigilator[exam.id][inst.id]])
                     active_early_list.append(both_early)
 
-                    # Late slot: same logic
                     is_in_late = model.new_bool_var(f"s3_il_{exam.id}_{inst.id}_{t_late}")
                     model.add(exam_times[exam.id] == t_late).only_enforce_if(is_in_late)
                     model.add(exam_times[exam.id] != t_late).only_enforce_if(is_in_late.negated())
@@ -261,28 +259,128 @@ def solve(
                     model.add_min_equality(both_late, [is_in_late, invigilator[exam.id][inst.id]])
                     active_late_list.append(both_late)
 
-                # OR: instructor active in slot if they invigilate at least one exam there
                 active_in_early = model.new_bool_var(f"s3_ae_{inst.id}_{t_early}")
                 model.add_max_equality(active_in_early, active_early_list)
 
                 active_in_late = model.new_bool_var(f"s3_al_{inst.id}_{t_late}")
                 model.add_max_equality(active_in_late, active_late_list)
 
-                # AND: penalty if active in both consecutive slots
                 consec_penalty = model.new_bool_var(f"s3_{inst.id}_{t_early}_{t_late}")
                 model.add_min_equality(consec_penalty, [active_in_early, active_in_late])
                 s3_cost.append(consec_penalty)
 
-    # ==================== Objective Function ====================
-    # F = w1 * Σ(S1) + w2 * S2 + w3 * Σ(S3)
+    # ==================== S4: Student Consecutive Day Gap ====================
+    # Penalize when a student has exams on consecutive days (or same day).
     #
-    # model.minimize() tells CP-SAT to find the feasible solution
-    # with the lowest total weighted penalty, using branch-and-bound with LNS.
+    # "Consecutive" here means |day(e_a) - day(e_b)| ≤ 1, which includes:
+    #   - Same day (diff=0): student has two exams on the same day (different periods)
+    #   - Adjacent day (diff=1): e.g., Monday + Tuesday, no rest day in between
+    #
+    # The goal is to ensure at least 1 empty day between any two exams
+    # for each student: |day(e_a) - day(e_b)| ≥ 2 is the desired condition.
+    #
+    # Implementation steps:
+    #   1) Derive exam_day variables from exam_times using integer division:
+    #      exam_day[eid] = exam_times[eid] // periods_per_day
+    #      CP-SAT provides add_division_equality(target, numerator, denominator)
+    #
+    #   2) Build a reverse mapping: student_id → list of exam_ids
+    #      This inverts the exam.student_ids sets so we can iterate per-student.
+    #
+    #   3) For each student, for each pair of their exams:
+    #      - Compute the absolute day difference: |day_a - day_b|
+    #        CP-SAT provides add_abs_equality(target, expression)
+    #      - If abs_diff ≤ 1, incur a penalty of 1
+    #        Using reification: penalty=1 ↔ abs_diff ≤ 1
+    #
+    # Variable count: O(students × avg_exams_per_student²). For hec-s-92 with
+    # 2823 students averaging ~4 exams each: ~2823 × 6 pairs = ~17,000 variables.
+    #
+    # NOTE: For very large instances (10,000+ students), consider sampling or
+    # disable via enable_s4=False. Alternatively, limit to students with 3+ exams.
+
+    s4_cost = []
+
+    if enable_s4:
+        # Step 1: Create exam_day variables via integer division
+        # exam_day[eid] = exam_times[eid] ÷ periods_per_day (integer division)
+        # This extracts the day index from the timeslot index.
+        # Example: periods_per_day=3, timeslot=7 → day=2 (7÷3=2), period=1 (7%3=1)
+
+        periods_per_day = max(t.period for t in instance.timeslots) + 1
+        n_days = max(t.day for t in instance.timeslots) + 1
+
+        exam_day = {}
+        for exam in instance.exams:
+            exam_day[exam.id] = model.new_int_var(0, n_days - 1, f"day_{exam.id}")
+            model.add_division_equality(exam_day[exam.id], exam_times[exam.id], periods_per_day)
+
+        # Step 2: Build reverse mapping — student_id → [exam_ids]
+        # We invert the exam.student_ids relationship so we can iterate
+        # per-student and find all their exam pairs efficiently.
+        # defaultdict(list) avoids KeyError for students with only 1 exam.
+
+        student_exams = defaultdict(list)
+        for exam in instance.exams:
+            for sid in exam.student_ids:
+                student_exams[sid].append(exam.id)
+
+        # Step 3: For each student, penalize exam pairs with |day_diff| ≤ 1
+        # Only consider students with 2+ exams (otherwise no pair to check).
+        # Within each student, iterate pairs with i < j to avoid duplicates.
+
+        for sid, eids in student_exams.items():
+            if len(eids) < 2:
+                continue
+
+            for i in range(len(eids)):
+                for j in range(i + 1, len(eids)):
+                    e_a = eids[i]
+                    e_b = eids[j]
+
+                    # Compute signed difference: diff = day_a - day_b
+                    # Range is [-n_days+1, n_days-1] to cover all possibilities
+                    diff = model.new_int_var(-(n_days - 1), n_days - 1, f"s4_diff_{sid}_{e_a}_{e_b}")
+                    model.add(diff == exam_day[e_a] - exam_day[e_b])
+
+                    # Compute absolute difference: abs_diff = |diff|
+                    # CP-SAT's add_abs_equality handles this natively
+                    abs_diff = model.new_int_var(0, n_days - 1, f"s4_abs_{sid}_{e_a}_{e_b}")
+                    model.add_abs_equality(abs_diff, diff)
+
+                    # Reified penalty: penalty = 1 ↔ abs_diff ≤ 1
+                    # If the day gap is 0 (same day) or 1 (consecutive days),
+                    # the student doesn't have enough rest → penalty.
+                    # If abs_diff ≥ 2, there's at least one rest day → no penalty.
+                    #
+                    # Reification ensures the boolean is EXACTLY equivalent:
+                    #   penalty=True  enforces abs_diff ≤ 1
+                    #   penalty=False enforces abs_diff ≥ 2
+                    penalty = model.new_bool_var(f"s4_{sid}_{e_a}_{e_b}")
+                    model.add(abs_diff <= 1).only_enforce_if(penalty)
+                    model.add(abs_diff >= 2).only_enforce_if(penalty.negated())
+
+                    s4_cost.append(penalty)
+
+    # ==================== Objective Function ====================
+    # F = w1 * Σ(S1) + w2 * S2 + w3 * Σ(S3) + w4 * Σ(S4)
+    #
+    # Weights reflect priority:
+    #   w2=5 (fairness is primary goal)
+    #   w4=3 (student comfort is important)
+    #   w3=2 (instructor scheduling comfort)
+    #   w1=1 (preference satisfaction is nice-to-have)
+    #
+    # model.minimize() uses branch-and-bound with LNS to converge
+    # toward the optimal solution within the time limit.
 
     total_s3 = sum(s3_cost) if s3_cost else 0
+    total_s4 = sum(s4_cost) if s4_cost else 0
 
-    total_objective = model.new_int_var(0, 1000000, "total_objective")
-    model.add(total_objective == w1 * sum(s1_cost) + w2 * s2_cost + w3 * total_s3)
+    total_objective = model.new_int_var(0, 10000000, "total_objective")
+    model.add(
+        total_objective == w1 * sum(s1_cost) + w2 * s2_cost + w3 * total_s3 + w4 * total_s4
+    )
     model.minimize(total_objective)
 
     # ==================== Solve ====================
@@ -319,6 +417,7 @@ def solve(
             "s1_penalty": sum(solver.value(v) for v in s1_cost),
             "s2_penalty": solver.value(s2_cost),
             "s3_penalty": sum(solver.value(v) for v in s3_cost) if s3_cost else 0,
+            "s4_penalty": sum(solver.value(v) for v in s4_cost) if s4_cost else 0,
             "wall_time": solver.wall_time,
             "max_load": solver.value(max_load),
             "min_load": solver.value(min_load),
