@@ -26,7 +26,11 @@ import {
   Timer,
   XCircle,
   WifiOff,
+  FlaskConical,
+  Database,
 } from "lucide-react";
+
+import { exportScheduleToExcel } from "./utils/excelExport";
 
 
 /* ────────────────────────────────────────────────────────────
@@ -35,12 +39,23 @@ import {
 
 const API_BASE_URL = "http://localhost:8000";
 
+const CARTER_DATASETS = [
+  { id: "ear-f-83-2", label: "ear-f-83-2", exams: 190, students: "16.9K" },
+  { id: "hec-s-92-2", label: "hec-s-92-2", exams: 81,  students: "2.8K"  },
+  { id: "pur-s-93-2", label: "pur-s-93-2", exams: 2419, students: "30.0K" },
+  { id: "sta-f-83-2", label: "sta-f-83-2", exams: 139, students: "5.7K"  },
+  { id: "uta-s-92-2", label: "uta-s-92-2", exams: 622, students: "21.3K" },
+  { id: "yor-f-83-2", label: "yor-f-83-2", exams: 181, students: "11.5K" },
+];
+
+const WEEKDAY_NAMES = [
+  "Monday", "Tuesday", "Wednesday", "Thursday",
+  "Friday", "Saturday", "Sunday",
+];
+
 
 /* ────────────────────────────────────────────────────────────
    DATA BRIDGE — normalizes the backend's Solution.to_dict()
-
-   Python serializes dict keys as strings: { "0": 5, "1": 3 }
-   The grid lookup uses integer keys, so we convert on arrival.
    ──────────────────────────────────────────────────────────── */
 
 function normalizeSolution(rawSolution) {
@@ -66,15 +81,30 @@ function normalizeSolution(rawSolution) {
 
 /* ────────────────────────────────────────────────────────────
    UTILITY — Derive grid structure dynamically from timeslot data.
-   No hardcoded day/period label arrays anywhere.
+
+   Day label wrapping: dayIndex % 7 maps to weekday names so
+   day 7 → "Monday", day 8 → "Tuesday", etc. For multi-week
+   schedules, a "Wk N" suffix disambiguates repeated names.
    ──────────────────────────────────────────────────────────── */
 
 function buildDayMap(timeslots) {
   const dayMap = {};
+  const allDays = [...new Set(timeslots.map((ts) => ts.day))].sort((a, b) => a - b);
+  const totalWeeks = allDays.length > 0 ? Math.floor(allDays[allDays.length - 1] / 7) + 1 : 1;
+  const needsWeekSuffix = totalWeeks > 1;
+
   timeslots.forEach((ts) => {
-    if (!dayMap[ts.day]) dayMap[ts.day] = { label: ts.dayLabel, periods: [] };
+    if (!dayMap[ts.day]) {
+      const weekdayName = WEEKDAY_NAMES[ts.day % 7];
+      const weekNum = Math.floor(ts.day / 7) + 1;
+      const label = needsWeekSuffix
+        ? `${weekdayName} W${weekNum}`
+        : weekdayName;
+      dayMap[ts.day] = { label, periods: [] };
+    }
     dayMap[ts.day].periods.push(ts);
   });
+
   const sortedDays = Object.keys(dayMap).map(Number).sort((a, b) => a - b);
   sortedDays.forEach((d) => dayMap[d].periods.sort((a, b) => a.period - b.period));
   return { dayMap, sortedDays };
@@ -133,10 +163,18 @@ function Toast({ toast, onDismiss }) {
 }
 
 
-function ImportModal({ isOpen, onClose, onImport, isParsing }) {
+/* ── Tabbed Import Modal ───────────────────────────────────── */
+
+function ImportModal({ isOpen, onClose, onLoadBenchmark, isParsing, selectedDataset, onDatasetChange }) {
+  const [activeTab, setActiveTab] = useState("benchmark");
   const [isDragging, setIsDragging] = useState(false);
 
   if (!isOpen) return null;
+
+  const tabs = [
+    { id: "benchmark", label: "Carter Benchmarks", icon: FlaskConical },
+    { id: "upload",    label: "Upload File",       icon: Upload },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -145,10 +183,11 @@ function ImportModal({ isOpen, onClose, onImport, isParsing }) {
         className="relative w-full max-w-lg mx-4 bg-white rounded-2xl shadow-2xl overflow-hidden"
         style={{ animation: "modalIn .25s cubic-bezier(.16,1,.3,1)" }}
       >
+        {/* ── Header ── */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
-              <Upload size={16} className="text-white" />
+              <Database size={16} className="text-white" />
             </div>
             <h2 className="text-lg font-semibold text-slate-900 tracking-tight">Import Problem Instance</h2>
           </div>
@@ -157,55 +196,166 @@ function ImportModal({ isOpen, onClose, onImport, isParsing }) {
           </button>
         </div>
 
+        {/* ── Tab Bar ── */}
+        <div className="flex border-b border-slate-100">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 text-xs font-medium transition-all relative
+                  ${isActive
+                    ? "text-blue-600"
+                    : "text-slate-400 hover:text-slate-600"
+                  }`}
+              >
+                <Icon size={14} />
+                {tab.label}
+                {tab.id === "upload" && (
+                  <span className="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider bg-slate-100 text-slate-400 rounded-full">
+                    Soon
+                  </span>
+                )}
+                {isActive && (
+                  <span className="absolute bottom-0 left-4 right-4 h-[2px] bg-blue-600 rounded-full" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── Tab Content ── */}
         <div className="p-6">
-          <div
-            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={() => setIsDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setIsDragging(false); }}
-            className={`
-              relative flex flex-col items-center justify-center gap-3 p-10 rounded-xl border-2 border-dashed
-              transition-all duration-200 cursor-pointer
-              ${isDragging
-                ? "border-blue-500 bg-blue-50 scale-[1.01]"
-                : "border-slate-200 bg-slate-50/50 hover:border-slate-300 hover:bg-slate-50"
-              }
-            `}
-          >
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors duration-200 ${isDragging ? "bg-blue-100" : "bg-slate-100"}`}>
-              <FileSpreadsheet size={26} className={isDragging ? "text-blue-600" : "text-slate-400"} />
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-medium text-slate-700">
-                Drop your <span className="text-blue-600">.xlsx</span> or <span className="text-blue-600">.csv</span> file here
-              </p>
-              <p className="text-xs text-slate-400 mt-1">or click to browse — max 10 MB</p>
-            </div>
-          </div>
 
-          <div className="mt-5 p-3.5 rounded-lg bg-amber-50 border border-amber-200">
-            <div className="flex gap-2">
-              <Info size={15} className="text-amber-600 mt-0.5 shrink-0" />
-              <div className="text-xs text-amber-800 leading-relaxed">
-                <p className="font-medium mb-0.5">Carter benchmark datasets supported:</p>
-                <p>Place <strong>.crs</strong> and <strong>.stu</strong> files in the backend's <code className="bg-amber-100 px-1 rounded">data/instances/carter/</code> directory.</p>
-                <p className="mt-1">Currently configured: <strong>hec-s-92-2</strong></p>
+          {/* ── TAB: Carter Benchmarks ── */}
+          {activeTab === "benchmark" && (
+            <>
+              <div className="mb-4">
+                <label className="block text-xs font-medium text-slate-600 mb-2">
+                  Select a Carter benchmark dataset
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedDataset}
+                    onChange={(e) => onDatasetChange(e.target.value)}
+                    className="w-full appearance-none px-3.5 py-2.5 pr-10 text-sm font-medium text-slate-800 bg-white border border-slate-200 rounded-lg hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all cursor-pointer"
+                  >
+                    {CARTER_DATASETS.map((ds) => (
+                      <option key={ds.id} value={ds.id}>
+                        {ds.label}    —    {ds.exams} exams  ·  {ds.students} students
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                </div>
               </div>
-            </div>
-          </div>
 
-          <div className="flex justify-end gap-2.5 mt-6">
-            <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
-              Cancel
-            </button>
-            <button
-              onClick={onImport}
-              disabled={isParsing}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isParsing && <Loader2 size={14} className="animate-spin" />}
-              {isParsing ? "Parsing…" : "Upload & Parse"}
-            </button>
-          </div>
+              {/* Dataset info card */}
+              {(() => {
+                const ds = CARTER_DATASETS.find((d) => d.id === selectedDataset);
+                return ds ? (
+                  <div className="p-3.5 rounded-lg bg-blue-50/60 border border-blue-200/60 mb-5">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <FlaskConical size={14} className="text-blue-600" />
+                      <span className="text-sm font-semibold text-blue-800">{ds.label}</span>
+                    </div>
+                    <div className="flex gap-4 text-xs text-blue-700/80">
+                      <span>{ds.exams} exams</span>
+                      <span>{ds.students} students</span>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 mb-5">
+                <div className="flex gap-2">
+                  <Info size={14} className="text-slate-400 mt-0.5 shrink-0" />
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Benchmark <strong>.crs</strong> and <strong>.stu</strong> file pairs must be present in the backend's
+                    <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">data/instances/carter/</code>
+                    directory. Rooms, timeslots, and instructors are generated synthetically.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5">
+                <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
+                  Cancel
+                </button>
+                <button
+                  onClick={onLoadBenchmark}
+                  disabled={isParsing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isParsing ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
+                  {isParsing ? "Parsing…" : "Load Benchmark"}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* ── TAB: Upload File (Coming Soon) ── */}
+          {activeTab === "upload" && (
+            <>
+              <div className="relative">
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={(e) => { e.preventDefault(); setIsDragging(false); }}
+                  className={`
+                    relative flex flex-col items-center justify-center gap-3 p-10 rounded-xl border-2 border-dashed
+                    transition-all duration-200 opacity-50 pointer-events-none
+                    ${isDragging
+                      ? "border-blue-500 bg-blue-50 scale-[1.01]"
+                      : "border-slate-200 bg-slate-50/50"
+                    }
+                  `}
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
+                    <FileSpreadsheet size={26} className="text-slate-400" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-slate-700">
+                      Drop your <span className="text-blue-600">.xlsx</span> or <span className="text-blue-600">.csv</span> file here
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">or click to browse — max 10 MB</p>
+                  </div>
+                </div>
+
+                {/* Coming Soon overlay */}
+                <div className="absolute inset-0 flex items-center justify-center rounded-xl">
+                  <div className="px-4 py-2 rounded-lg bg-white/90 border border-slate-200 shadow-sm">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Coming Soon</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 p-3.5 rounded-lg bg-amber-50 border border-amber-200">
+                <div className="flex gap-2">
+                  <Info size={15} className="text-amber-600 mt-0.5 shrink-0" />
+                  <div className="text-xs text-amber-800 leading-relaxed">
+                    <p className="font-medium mb-0.5">Custom file upload is under development.</p>
+                    <p>In the meantime, use the <strong>Carter Benchmarks</strong> tab to load a built-in dataset for testing.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5 mt-6">
+                <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
+                  Cancel
+                </button>
+                <button
+                  disabled
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg shadow-sm opacity-40 cursor-not-allowed"
+                >
+                  <Upload size={14} />
+                  Upload &amp; Parse
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -446,8 +596,10 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
 
+  // ── Selected dataset — persists across Import and Solve ──
+  const [selectedDataset, setSelectedDataset] = useState("hec-s-92-2");
+
   // ── Problem instance: null = nothing loaded yet ──
-  // Hydrated entirely from backend /parse or /solve responses.
   const [problemData, setProblemData] = useState(null);
 
   // ── Solver state ──
@@ -478,26 +630,25 @@ export default function App() {
   }, []);
 
   /* ──────────────────────────────────────────────────────────
-     IMPORT: calls POST /parse → hydrates problemData
-     This is the ONLY way data enters the frontend.
+     IMPORT: POST /parse with { dataset } → hydrates problemData
      ────────────────────────────────────────────────────────── */
 
-  const handleImport = useCallback(async () => {
+  const handleLoadBenchmark = useCallback(async () => {
     setIsParsing(true);
     dismissToast();
 
     try {
-      const response = await fetch(`${API_BASE_URL}/parse`, {
+      const response = await fetch(`${API_BASE_URL}/benchmark/parse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),  // uses backend defaults (hec-s-92-2)
+        body: JSON.stringify({ dataset: selectedDataset }),
       });
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
         throw new Error(
           response.status === 404
-            ? `Dataset files not found. ${errorText}`
+            ? `Dataset "${selectedDataset}" not found. Ensure .crs and .stu files exist in data/instances/carter/.`
             : `Server returned ${response.status}: ${errorText}`
         );
       }
@@ -515,8 +666,8 @@ export default function App() {
       const inst = data.instance;
       showToast(
         "success",
-        "Data Imported",
-        `Loaded ${inst.exams.length} exams, ${inst.rooms.length} rooms, ${inst.timeslots.length} timeslots, ${inst.instructors.length} instructors.`
+        `Loaded ${selectedDataset}`,
+        `${inst.exams.length} exams, ${inst.rooms.length} rooms, ${inst.timeslots.length} timeslots, ${inst.instructors.length} instructors.`
       );
 
     } catch (err) {
@@ -529,13 +680,11 @@ export default function App() {
     } finally {
       setIsParsing(false);
     }
-  }, [dismissToast, showToast]);
+  }, [selectedDataset, dismissToast, showToast]);
 
   /* ──────────────────────────────────────────────────────────
-     SOLVER: calls POST /solve → gets instance + solution + stats
-     The response includes the full instance so problemData
-     is always in sync with the solver's actual ProblemInstance.
-     No payload reconstruction — just config.
+     SOLVER: POST /solve with { dataset } → instance + solution
+     Uses the same selectedDataset so parse & solve stay in sync.
      ────────────────────────────────────────────────────────── */
 
   const runSolver = useCallback(async () => {
@@ -570,10 +719,10 @@ export default function App() {
     stageRef.current = stageInterval;
 
     try {
-      const response = await fetch(`${API_BASE_URL}/solve`, {
+      const response = await fetch(`${API_BASE_URL}/benchmark/solve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),  // uses backend defaults
+        body: JSON.stringify({ dataset: selectedDataset }),
       });
 
       if (!response.ok) {
@@ -587,12 +736,10 @@ export default function App() {
 
       const data = await response.json();
 
-      // ── Always sync problemData from the solver's actual instance ──
       if (data.instance) {
         setProblemData(data.instance);
       }
 
-      // ── Handle failed / infeasible ──
       if (data.status === "failed" || data.status === "infeasible") {
         setSolverResult({ failed: true });
         showToast(
@@ -604,10 +751,8 @@ export default function App() {
         return;
       }
 
-      // ── Normalize the solution through the data bridge ──
       const normalizedSolution = normalizeSolution(data.solution);
 
-      // Determine unassigned exams using the BACKEND's instance (not stale state)
       const instanceExams = data.instance?.exams || problemData?.exams || [];
       const placedIds = new Set(Object.keys(normalizedSolution.exam_time).map(Number));
       const unassigned = instanceExams
@@ -646,7 +791,7 @@ export default function App() {
       stageRef.current = null;
       setSolverRunning(false);
     }
-  }, [dataLoaded, problemData, dismissToast, showToast]);
+  }, [dataLoaded, selectedDataset, problemData, dismissToast, showToast]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -710,6 +855,14 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2.5">
+                {/* Show active dataset badge when loaded */}
+                {dataLoaded && (
+                  <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-[11px] font-medium text-slate-500">
+                    <FlaskConical size={12} />
+                    {selectedDataset}
+                  </div>
+                )}
+
                 <button
                   onClick={() => setImportOpen(true)}
                   className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
@@ -728,6 +881,7 @@ export default function App() {
                 </button>
 
                 <button
+                  onClick={() => exportScheduleToExcel(problemData, solverResult, selectedDataset)}
                   disabled={!hasSolution}
                   className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -788,14 +942,14 @@ export default function App() {
               </div>
               <h2 className="text-base font-semibold text-slate-600 mb-1">No Data Loaded</h2>
               <p className="text-sm text-slate-400 max-w-md text-center mb-5">
-                Start by importing your problem instance file. The dashboard will populate once the data is parsed.
+                Load a Carter benchmark dataset or upload your own instance file to get started.
               </p>
               <button
                 onClick={() => setImportOpen(true)}
                 className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
               >
-                <Upload size={15} />
-                Import Dataset
+                <FlaskConical size={15} />
+                Load Benchmark
               </button>
             </div>
           )}
@@ -808,7 +962,7 @@ export default function App() {
               </div>
               <h2 className="text-base font-semibold text-slate-600 mb-1">Ready to Solve</h2>
               <p className="text-sm text-slate-400 max-w-md text-center">
-                Problem instance loaded successfully. Hit <strong className="text-slate-600">Run Solver</strong> to generate an optimized exam timetable.
+                <strong className="text-slate-600">{selectedDataset}</strong> loaded successfully. Hit <strong className="text-slate-600">Run Solver</strong> to generate an optimized timetable.
               </p>
             </div>
           )}
@@ -870,7 +1024,14 @@ export default function App() {
         </main>
       </div>
 
-      <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} onImport={handleImport} isParsing={isParsing} />
+      <ImportModal
+        isOpen={importOpen}
+        onClose={() => setImportOpen(false)}
+        onLoadBenchmark={handleLoadBenchmark}
+        isParsing={isParsing}
+        selectedDataset={selectedDataset}
+        onDatasetChange={setSelectedDataset}
+      />
       {solverRunning && <SolverOverlay elapsedSeconds={elapsedSeconds} stage={solverStage} />}
       <Toast toast={toast} onDismiss={dismissToast} />
     </>
