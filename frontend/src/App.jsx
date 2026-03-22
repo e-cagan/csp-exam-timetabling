@@ -43,7 +43,7 @@ import { exportScheduleToExcel } from "./utils/excelExport";
    CONFIGURATION
    ──────────────────────────────────────────────────────────── */
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const CARTER_DATASETS = [
   { id: "ear-f-83-2", label: "ear-f-83-2", exams: 190, students: "16.9K" },
