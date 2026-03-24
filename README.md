@@ -73,7 +73,8 @@ The system is designed as a decoupled Full-Stack application, ensuring independe
 ### **Backend (Hugging Face Spaces + Docker)**
 * **API Framework:** FastAPI (Python 3.10) providing high-performance asynchronous endpoints.
 * **Containerization:** The entire backend is containerized using **Docker** to ensure environment consistency.
-* **Strategic Migration (Render → Hugging Face):** * **The Problem:** The previous hosting (Render Free Tier) had a strict **512MB RAM** limit, causing frequent **Out of Memory (OOM)** crashes during complex constraint propagation.
+* **Strategic Migration (Render → Hugging Face):**
+    * **The Problem:** The previous hosting (Render Free Tier) had a strict **512MB RAM** limit, causing frequent **Out of Memory (OOM)** crashes during complex constraint propagation.
     * **The Solution:** Migrated to Hugging Face Spaces with **16GB RAM / 2 vCPU**. This 32x memory increase allows the OR-Tools CP-SAT engine to handle thousands of reified boolean variables (especially for S2 Fairness and S4 Student Day Gap) without bottlenecks.
 * **Hosting:** Currently running on **Hugging Face Spaces** for robust computational power.
 
@@ -89,9 +90,11 @@ csp-exam-timetabling/
 │   ├── generators/
 │   │   └── synthetic.py        # Synthetic instance generator
 │   ├── parsers/
-│   │   └── carter_parser.py    # Carter benchmark dataset parser
+│   │   ├── carter_parser.py    # Carter benchmark dataset parser
+│   │   └── okan_parser.py      # Istanbul Okan University Excel parser (pandas)
 │   └── instances/
-│       └── carter/             # Carter benchmark files (.crs, .stu)
+│       ├── carter/             # Carter benchmark files (.crs, .stu)
+│       └── okan/               # Okan University Excel files
 │
 ├── src/
 │   ├── models/
@@ -157,20 +160,40 @@ How constraints are modeled:
 
 ## Benchmark Results
 
-Tested on the Carter benchmark dataset (Toronto instances), the standard benchmark for exam timetabling research.
-
-### hec-s-92 (80 exams, 2823 students, 18 timeslots)
+### Carter hec-s-92 (80 exams, 2823 students, 18 timeslots)
 
 | Configuration | Status | Objective | S1 | S2 (gap) | S3 | S4 | Time |
 |--------------|--------|-----------|-----|----------|-----|------|------|
 | S1+S2 only | OPTIMAL | 0 | 0 | 0 (9-9) | — | — | 14.3s |
 | S1+S2+S3 | FEASIBLE | 27 | 12 | 1 (8-7) | 5 | — | 120s |
-| S1+S2+S4 | FEASIBLE | 15,457 | 1 | 0 (9-9) | — | 5,152 | 120s |
+| S1+S2+S4 | FEASIBLE | 14,451 | 0 | 0 (9-9) | — | 4,817 | 120s |
+
+### Istanbul Okan University (131 exams, ~1190 students, 62 timeslots)
+
+| Configuration | Status | Objective | S1 | S2 (gap) | S3 | S4 | Time |
+|--------------|--------|-----------|-----|----------|-----|------|------|
+| S1+S2+S4 | FEASIBLE | 2,870 | 0 | 1 (7-6) | — | 955 | 300s |
+
+### Cross-Instance Comparison
+
+| Metric | Carter hec-s-92 | Okan University |
+|--------|----------------|-----------------|
+| Exams | 80 | 131 |
+| Students | 2,823 | ~1,190 |
+| Timeslots | 18 | 62 |
+| Rooms | 15 (synthetic) | 23 (real) |
+| Instructors | 30 (synthetic) | 36 (real) |
+| S1 (preference violations) | 0 | 0 |
+| S2 (fairness gap) | 0 | 1 (mathematically minimum) |
+| S4 (student day penalty) | 4,817 | 955 |
+| Solve time | 120s | 300s |
 
 **Key findings:**
-- With only S1+S2, the solver achieves **perfect fairness** (all 30 instructors assigned exactly 9 exams) with zero preference violations in 14 seconds, proven OPTIMAL.
-- S4 (student day gap) produces a high penalty (5,152) because 80 exams compressed into 18 timeslots (6 days × 3 periods) leaves minimal scheduling flexibility. This is inherent to the problem's chromatic number being exactly 18 — the schedule is maximally packed.
-- S2 fairness remains perfect (gap=0) even with S4 enabled, confirming that instructor fairness and student comfort can be optimized simultaneously.
+- With only S1+S2, the Carter solver achieves **perfect fairness** (all 30 instructors assigned exactly 9 exams) with zero preference violations in 14 seconds, proven OPTIMAL.
+- S4 (student day gap) produces a high penalty on Carter (4,817) because 80 exams are compressed into 18 timeslots (6 days × 3 periods) — the chromatic number equals available slots, leaving zero scheduling flexibility.
+- **Okan University S4 is 5× lower** (955 vs 4,817) thanks to 62 timeslots spread over 8 exam days with 5 periods each, giving the solver far more room to space out student exams.
+- Okan S2 gap=1 is the **mathematical minimum**: 131 exams / 36 instructors ≈ 3.64, requiring 33 instructors at 6 exams and 3 at 7 exams. Perfect equality (gap=0) is arithmetically impossible.
+- **S1=0 on real data** is particularly significant: with actual instructor leave days from İZİN GÜNLERİ, zero preference violations confirms the solver respects real scheduling constraints.
 - S3 and S4 each add significant computational cost due to large numbers of reified variables.
 
 ## Visualizations
@@ -184,16 +207,13 @@ The system generates four publication-ready charts saved to `experiments/figures
 | Slot Utilization | `slot_utilization.png` | Exams per timeslot with room capacity limit line |
 | Exam Size Distribution | `exam_size_distribution.png` | Histogram of student counts per exam |
 
-## Carter Benchmark Dataset
+## Datasets
 
-The project supports the Toronto benchmark instances, the most widely used benchmark suite in exam timetabling literature. The dataset was originally compiled by Carter et al. (1996) and has since become the standard evaluation platform for exam timetabling algorithms.
+### Carter Benchmark (Toronto Instances)
 
-### Dataset Format
+The most widely used benchmark suite in exam timetabling literature, originally compiled by Carter et al. (1996).
 
-- **`.crs` files:** Each line defines an exam — `exam_id  num_students`. Acts as the source of truth for valid exam IDs.
-- **`.stu` files:** Each line represents a student — space-separated exam IDs they are enrolled in. This implicitly defines the conflict graph: any two exams appearing on the same line share a student and cannot be scheduled simultaneously.
-
-### Instance Characteristics
+**Format:** `.crs` files (exam definitions) and `.stu` files (student enrollments). Room and instructor data are synthetically generated since Carter only covers the graph coloring aspect.
 
 | Instance | Exams | Students | Enrollments | Avg Exams/Student | Max Exam Size | Conflict Edges | Graph Density | Chromatic Bound |
 |----------|-------|----------|-------------|-------------------|---------------|----------------|---------------|-----------------|
@@ -206,11 +226,41 @@ The project supports the Toronto benchmark instances, the most widely used bench
 
 **Notes:**
 - **hec-s-92** is the smallest but densest instance (42.8% conflict density). Nearly half of all exam pairs share at least one student.
-- **sta-f-83** has fewest students (549) but the highest enrollment rate (avg 10.4 exams/student, max 33). Students take many courses, creating widespread conflicts despite low density.
+- **sta-f-83** has fewest students (549) but the highest enrollment rate (avg 10.4 exams/student, max 33).
 - **pur-s-93** has non-contiguous exam IDs (IDs range from 1 to 3158 with gaps). The parser handles this by reading valid IDs from the .crs file.
-- **uta-s-92** and **pur-s-93** are large-scale instances (600+ and 2400+ exams respectively) that stress-test solver scalability.
 - Conflict density is not computed for uta/pur due to the quadratic cost of O(n²) pair comparison at that scale.
-- Room and instructor data are synthetically generated since Carter only covers the graph coloring (timeslot assignment) aspect.
+
+### Istanbul Okan University (Real-World Data)
+
+Real exam scheduling data from Istanbul Okan University, Faculty of Engineering and Natural Sciences, 2024-2025 Fall Semester. Unlike Carter, this dataset provides **real** room capacities, instructor leave days, and course-instructor mappings.
+
+**Data Sources:**
+- **Ders İnceleme Raporu** — Student enrollment records (student_id → course_code mappings, equivalent to Carter's `.stu` file)
+- **Final Schedule Excel** — Exam schedule with dates, times, rooms, and invigilators
+  - `FINAL(8-18 OCAK)` sheet: Physical exam entries
+  - `DERSLİK KAPASİTE` sheet: Real classroom capacities (22 rooms, 14-53 capacity)
+  - `İZİN GÜNLERİ` sheet: Instructor leave days → S1 preference data
+
+**Instance Characteristics:**
+
+| Metric | Value |
+|--------|-------|
+| Exams | 131 |
+| Students | ~1,190 |
+| Timeslots | 62 (8 exam days × 5 periods + online slots) |
+| Rooms | 23 (22 real classrooms + synthetic halls for large exams) |
+| Instructors | 36 (25 PhD, from İZİN GÜNLERİ sheet) |
+| Conflict Density | ~17.9% |
+| Avg Students/Exam | 56 |
+| Max Exam Size | 446 |
+
+**Parser Features (`okan_parser.py`):**
+- Fuzzy course code matching: handles Turkish character differences (INŞ→INS), spaces, slash-separated codes (IE437/ILOG417), and prefix-based patterns (END405/419 → END419)
+- Achieves 94.4% match rate between schedule and enrollment data (134/142 entries)
+- Deduplication for exams split across multiple rooms or multi-day project exams
+- Automatic room scaling: adds synthetic large rooms (halls) when exam sizes exceed max classroom capacity
+- Instructor PhD detection from academic titles (DR., PROF., DOÇ.)
+- Leave day parsing from Turkish text ("Pazartesi (YL)", "Cuma (iki haftada bir)")
 
 ## Usage
 
@@ -222,37 +272,58 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Run with Okan University Data
+
+```python
+from data.parsers.okan_parser import parse_okan
+
+instance = parse_okan(
+    enrollment_path="data/instances/okan/Ders_Inceleme_Raporu.xlsx",
+    schedule_path="data/instances/okan/2024-2025_Guz_Final.xlsx",
+    schedule_sheet="FINAL(8-18 OCAK)"
+)
+```
+
 ### Run with Carter Benchmark
 
-```bash
-python main.py
+```python
+from data.parsers.carter_parser import parse_carter
+
+instance = parse_carter(
+    crs_path="data/instances/carter/hec-s-92-2.crs",
+    stu_path="data/instances/carter/hec-s-92-2.stu",
+    n_timeslots=18, n_rooms=15, n_instructors=30
+)
 ```
 
-### Example Output
+### Example Output (Okan University)
 ```
-Loaded Carter Instance: ProblemInstance(exams=80, timeslots=18, rooms=15, instructors=30)
+Loaded Okan Instance: ProblemInstance(exams=131, timeslots=62, rooms=23, instructors=36)
 
 === Solution Found (FEASIBLE) ===
 
 Exam  | Timeslot | Room | Students | Invigilators
 ------+----------+------+----------+-------------
-  1   |    8     |  3   |     367  | 2, 6, 7, 20, 21, 23, 24, 25, 29
-  2   |    1     |  8   |     469  | 5, 6, 11, 12, 13, 14, 15, 17, 19, 24, 29
-  3   |    16    |  0   |     245  | 16, 17, 18, 20, 21, 27
+  0   |    61    |  22  |      80  | 23, 32
+  1   |    0     |  0   |       1  | 23
+  2   |    2     |  3   |      43  | 21
   ...
 
 === Optimization Stats ===
-Objective value: 14451.0
+Objective value: 2870.0
 S1 penalty (preference violations): 0
-S2 penalty (workload gap): 0 (max=9, min=9)
+S2 penalty (workload gap): 1 (max=7, min=6)
 S3 penalty (consecutive invigilation): 0
-S4 penalty (student consecutive days): 4817
-Solve time: 120.11s
+S4 penalty (student consecutive days): 955
+Solve time: 300.31s
 
 === Workload Distribution ===
-  Instructor  0:   9 exams  █████████
+  Instructor  0:   6 exams  ██████
+  Instructor  1:   6 exams  ██████
+  Instructor  2:   7 exams  ███████
+  Instructor  3:   7 exams  ███████
   ...
-  Instructor 29:   9 exams  █████████
+  Instructor 35:   6 exams  ██████
 ```
 
 ### Solver Configuration
@@ -272,7 +343,7 @@ solution, stats = solve(
 
 ## Current Status
 
-### Completed (Weeks 1-7)
+### Completed (Weeks 1-8)
 - CSP/CSOP formulation with 6 hard constraints and 4 soft constraints
 - Full data model with validation and serialization (dataclasses with `__post_init__`)
 - Conflict graph construction (adjacency list, O(n²·s) precomputation)
@@ -286,13 +357,13 @@ solution, stats = solve(
   - S3: Consecutive invigilation avoidance (reified slot detection)
   - S4: Student consecutive day gap (division + abs + reification)
 - Carter benchmark dataset parser and integration
-- Benchmark testing on hec-s-92 (80 exams, 18 timeslots)
+- Istanbul Okan University real-world data parser (pandas + fuzzy matching)
+- Benchmark testing on Carter hec-s-92 and Okan University data
 - Visualization module: timetable grid, workload chart, slot utilization, exam distribution
-- Web interface: React + FastAPI (teammate)
+- Web interface: React 19 + FastAPI, deployed on Vercel + Hugging Face Spaces
 
 ### Planned
-- **Week 8:** Large instance testing (sta-f-83, yor-f-83, ear-f-83) + report + analysis
-- **Week 9:** Final presentation
+- **Week 9:** Final presentation + report
 
 ## Known Limitations
 
@@ -301,12 +372,14 @@ solution, stats = solve(
 - **S4 penalty floor:** When the chromatic number equals the available timeslots (schedule is maximally packed), S4 cannot be fully minimized. Increasing timeslots reduces S4 penalty.
 - **Backtracking solver** handles only H1-H3 and is exponential. It exists solely as a baseline.
 - **Carter dataset** lacks room and instructor data. These are synthetically generated, which means H2-H6 results are not directly comparable with literature that only evaluates graph coloring.
+- **Okan parser coverage:** 94.4% match rate — remaining 5.6% are courses from programs not present in enrollment data (e.g., GEOM courses).
 - **Optimality gap:** With S3/S4 enabled and tight time limits, the solver may return FEASIBLE (not proven optimal) solutions.
 
 ## Dependencies
 
 - **Python 3.10+**
 - **ortools** — Google OR-Tools CP-SAT constraint programming solver
+- **pandas** — Excel data parsing and manipulation (Okan parser)
 - **matplotlib** — visualization generation
 - **numpy** — statistical analysis and chart computation
 - **pytest** — unit testing
@@ -324,7 +397,7 @@ This project explores a fairness-aware CSOP framework for university exam timeta
 
 4. **Two-solver comparison:** Manual backtracking baseline vs production-grade CP-SAT, demonstrating the impact of constraint propagation and heuristics.
 
-5. **Real benchmark validation:** Evaluated on Carter (Toronto) benchmark instances, the standard dataset in exam timetabling research, with detailed conflict graph analysis.
+5. **Dual validation — synthetic + real-world:** Evaluated on both Carter (Toronto) benchmark instances (the standard dataset in exam timetabling research) and real Istanbul Okan University data with actual room capacities, instructor leave days, and student enrollments.
 
 ## License
 
