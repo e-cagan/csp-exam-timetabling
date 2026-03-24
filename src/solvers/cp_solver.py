@@ -117,15 +117,21 @@ def solve(
     # Encoded as: combined = timeslot * num_rooms + room, then all_different.
 
     num_rooms = len(instance.rooms)
-    combined = {}
+    combined = []
 
     for exam in instance.exams:
-        combined[exam.id] = model.new_int_var(
-            0, len(instance.timeslots) * num_rooms - 1, f"combined_{exam.id}"
-        )
-        model.add(combined[exam.id] == exam_times[exam.id] * num_rooms + exam_rooms[exam.id])
+        if exam.is_online:
+            # Online exams aren't considered to test in all different
+            model.add(exam_rooms[exam.id] == 999)
+        else:
+            # Only face to face exams are eligable to apply all different rule
+            c_var = model.new_int_var(
+                0, len(instance.timeslots) * num_rooms - 1, f"combined_{exam.id}"
+            )
+            model.add(c_var == exam_times[exam.id] * num_rooms + exam_rooms[exam.id])
+            combined.append(c_var)
 
-    model.add_all_different(list(combined.values()))
+    model.add_all_different(combined)
 
     # ==================== H6: Minimum Invigilators Per Exam ====================
     # Σ_i Z_{e,i} ≥ required(e)
