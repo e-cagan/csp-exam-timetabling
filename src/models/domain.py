@@ -13,6 +13,7 @@ class Exam:
     student_ids: set[int]           # id's of students
     lecturer_id: int                # id of lecturer
     required_invigilators: int      # The amount of invigilators required
+    is_online: bool = False         # Is exam online or not (by default False)
 
     # Edge case detection
     def __post_init__(self):

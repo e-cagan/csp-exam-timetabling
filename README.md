@@ -60,6 +60,27 @@ Default weights: `w1=1, w2=5, w3=2, w4=3`. S2 (fairness) has the highest weight 
 
 **Note on S4:** Uses integer division (`add_division_equality`) to derive exam day from timeslot, then absolute difference (`add_abs_equality`) to compute day gaps between exam pairs per student. A penalty is incurred when `|day(e_a) - day(e_b)| ≤ 1`.
 
+## 🌐 Full-Stack Architecture & Deployment
+
+The system is designed as a decoupled Full-Stack application, ensuring independent scalability for both the user interface and the heavy-computation solver engine.
+
+### **Frontend (Vercel)**
+* **Framework:** React 19 with Vite for ultra-fast development and optimized production bundling.
+* **Styling:** Tailwind CSS 4.0 for a modern, responsive, and performant UI.
+* **Data Handling:** Integrated `xlsx` and `xlsx-js-style` libraries for exporting formatted Excel timetables.
+* **Hosting:** Deployed on **Vercel** for low-latency global access.
+
+### **Backend (Hugging Face Spaces + Docker)**
+* **API Framework:** FastAPI (Python 3.10) providing high-performance asynchronous endpoints.
+* **Containerization:** The entire backend is containerized using **Docker** to ensure environment consistency.
+* **Strategic Migration (Render → Hugging Face):** * **The Problem:** The previous hosting (Render Free Tier) had a strict **512MB RAM** limit, causing frequent **Out of Memory (OOM)** crashes during complex constraint propagation.
+    * **The Solution:** Migrated to Hugging Face Spaces with **16GB RAM / 2 vCPU**. This 32x memory increase allows the OR-Tools CP-SAT engine to handle thousands of reified boolean variables (especially for S2 Fairness and S4 Student Day Gap) without bottlenecks.
+* **Hosting:** Currently running on **Hugging Face Spaces** for robust computational power.
+
+### **Integration & Security**
+* **CORS:** Securely configured to allow communication between the Vercel frontend and Hugging Face API.
+* **Environment Variables:** Systematic use of `.env` management to handle API base URLs across production and local environments.
+
 ## Project Structure
 
 ```

@@ -1,9 +1,17 @@
 # Test
 pytest
 
+<<<<<<< HEAD
 # Veri analizi
 numpy
 matplotlib
+=======
+# Veri analizi & deney sonuçları (Week 5-8'de lazım olacak)
+numpy==1.26.4
+matplotlib==3.9.2
+pandas
+openpyxl
+>>>>>>> 182a9427f96792e68f279668d1199e319c210da9
 
 # Conflict graph
 networkx

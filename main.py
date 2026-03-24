@@ -2,29 +2,26 @@
 Main module to run the algorithms.
 """
 
-from data.generators.synthetic import generate_instance
-from data.parsers.carter_parser import parse_carter
+from data.parsers.okan_parser import parse_okan
 from src.solvers.cp_solver import solve
 from src.utils.visualize import generate_all
 
-
 if __name__ == '__main__':
-    # Parse the Carter benchmark dataset
-    instance = parse_carter(
-        crs_path="data/instances/carter/hec-s-92-2.crs",
-        stu_path="data/instances/carter/hec-s-92-2.stu",
-        n_timeslots=18,
-        n_rooms=15,
-        n_instructors=30
+    # 1. Parse the Okan University real-world dataset directly from Excel files
+    instance = parse_okan(
+        student_excel_path="data/instances/okan/Ders İnceleme Raporu 04.10.2024 Güz Dönemi.xlsx",
+        schedule_excel_path="data/instances/okan/2024-2025 Güz Final.xlsx",
+        exams_sheet_name="FINAL(8-18 OCAK)"
     )
 
-    print(f"Loaded Carter Instance: {instance}")
+    print(f"Loaded Okan Instance: {instance}")
 
-    # Solve with soft constraints
-    # S3 disabled for speed, S4 enabled for student fairness
-    solution, stats = solve(instance=instance, enable_s3=False, enable_s4=True, time_limit=120)
+    # 2. Solve with soft constraints
+    # S3 disabled for speed (too heavy for large real-world data initially)
+    # S4 enabled for student fairness
+    solution, stats = solve(instance=instance, enable_s3=False, enable_s4=True, time_limit=300)
 
-    # Display results
+    # 3. Display results
     if solution:
         print(f"\n=== Solution Found ({stats['status']}) ===\n")
 
@@ -36,11 +33,16 @@ if __name__ == '__main__':
             s = len(exam.student_ids)
             invig = solution.assigned_invigilators.get(exam.id, set())
             invig_str = ", ".join(str(i) for i in sorted(invig)) if invig else "none"
-            print(f"  {exam.id:<4}|    {t:<6}|  {r:<4}|  {s:>6}  | {invig_str}")
+            
+            # Virtual rooms (Online exams) check
+            room_display = "ONLINE" if r == 999 else r
+            print(f"  {exam.id:<4}|    {t:<6}|  {room_display:<6}|  {s:>6}  | {invig_str}")
 
         print(f"\nTotal exams: {len(instance.exams)}")
         print(f"Timeslots used: {len(set(solution.exam_time.values()))}/{len(instance.timeslots)}")
-        print(f"Rooms used: {len(set(solution.exam_room.values()))}/{len(instance.rooms)}")
+        # We don't consider online exams in used rooms calculation
+        used_rooms = [r for r in set(solution.exam_room.values()) if r != 999]
+        print(f"Physical Rooms used: {len(used_rooms)}/{len(instance.rooms) - 1}")
 
         # Optimization stats
         print(f"\n=== Optimization Stats ===")
