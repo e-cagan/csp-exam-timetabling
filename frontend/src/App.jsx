@@ -34,6 +34,10 @@ import {
   ToggleRight,
   RotateCcw,
   Gauge,
+  Search,
+  UserCheck,
+  ChevronUp,
+  ArrowUpDown,
 } from "lucide-react";
 
 import { exportScheduleToExcel } from "./utils/excelExport";
@@ -806,6 +810,175 @@ function SolverConfigPanel({ config, onChange, onReset, disabled }) {
 }
 
 
+/* ── Instructor Workload Panel ─────────────────────────────── */
+
+function WorkloadPanel({ solution, instructors }) {
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState("load-desc"); // load-desc, load-asc, name
+  const [expanded, setExpanded] = useState(true);
+
+  // Compute load per instructor from assigned_invigilators
+  const workloadMap = {};
+  for (const inst of instructors) workloadMap[inst.id] = 0;
+  if (solution?.assigned_invigilators) {
+    for (const invIds of Object.values(solution.assigned_invigilators)) {
+      if (Array.isArray(invIds)) {
+        for (const id of invIds) {
+          workloadMap[id] = (workloadMap[id] ?? 0) + 1;
+        }
+      }
+    }
+  }
+
+  const maxLoad = Math.max(1, ...Object.values(workloadMap));
+  const totalAssignments = Object.values(workloadMap).reduce((a, b) => a + b, 0);
+  const activeCount = Object.values(workloadMap).filter((v) => v > 0).length;
+
+  // Build sortable list
+  let rows = instructors.map((inst) => ({
+    id: inst.id,
+    name: inst.name || `Instructor ${inst.id}`,
+    is_phd: inst.is_phd,
+    load: workloadMap[inst.id] ?? 0,
+  }));
+
+  // Filter
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter((r) => r.name.toLowerCase().includes(q) || String(r.id).includes(q));
+  }
+
+  // Sort
+  if (sortBy === "load-desc") rows.sort((a, b) => b.load - a.load);
+  else if (sortBy === "load-asc") rows.sort((a, b) => a.load - b.load);
+  else rows.sort((a, b) => a.name.localeCompare(b.name));
+
+  const barColor = (load) => {
+    const ratio = load / maxLoad;
+    if (ratio >= 0.85) return "bg-red-400";
+    if (ratio >= 0.6)  return "bg-amber-400";
+    return "bg-blue-400";
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      {/* Header — always visible */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50/50 transition-colors"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-violet-600 flex items-center justify-center">
+            <UserCheck size={14} className="text-white" />
+          </div>
+          <div className="text-left">
+            <h3 className="text-sm font-semibold text-slate-800 leading-none">Instructor Workload</h3>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {activeCount}/{instructors.length} assigned · {totalAssignments} total duties
+            </p>
+          </div>
+        </div>
+        <ChevronUp
+          size={16}
+          className={`text-slate-400 transition-transform duration-200 ${expanded ? "" : "rotate-180"}`}
+        />
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-100">
+          {/* Toolbar: search + sort */}
+          <div className="px-4 py-3 flex items-center gap-2.5 border-b border-slate-100 bg-slate-50/40">
+            <div className="relative flex-1 max-w-xs">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search instructor…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-7.5 pr-3 py-1.5 text-xs text-slate-700 bg-white border border-slate-200 rounded-lg placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-300 transition-all"
+                style={{ paddingLeft: "1.75rem" }}
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              {[
+                { id: "load-desc", label: "Highest" },
+                { id: "load-asc",  label: "Lowest" },
+                { id: "name",      label: "A–Z" },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setSortBy(opt.id)}
+                  className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-all ${
+                    sortBy === opt.id
+                      ? "bg-violet-100 text-violet-700 border border-violet-200"
+                      : "text-slate-400 hover:text-slate-600 hover:bg-slate-100 border border-transparent"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Instructor list — scrollable */}
+          <div className="max-h-[360px] overflow-y-auto">
+            {rows.length === 0 ? (
+              <div className="px-5 py-8 text-center text-xs text-slate-400">
+                No instructors match your search.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {rows.map((inst, idx) => (
+                  <div key={inst.id} className="px-5 py-2.5 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+                    {/* Rank badge */}
+                    <span className="w-6 text-right text-[10px] font-mono text-slate-300 tabular-nums shrink-0">
+                      {idx + 1}
+                    </span>
+
+                    {/* Name + title */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-slate-700 truncate">{inst.name}</p>
+                      <p className="text-[10px] text-slate-400">
+                        {inst.is_phd ? "Research Asst." : "Faculty"} · ID {inst.id}
+                      </p>
+                    </div>
+
+                    {/* Load bar + count */}
+                    <div className="flex items-center gap-2.5 shrink-0 w-36">
+                      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${barColor(inst.load)}`}
+                          style={{ width: `${maxLoad > 0 ? (inst.load / maxLoad) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-bold text-slate-700 tabular-nums w-6 text-right">
+                        {inst.load}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Footer stats */}
+          <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between text-[10px] text-slate-400">
+            <span>
+              Load range: <span className="font-mono font-medium text-slate-600">{Math.min(...Object.values(workloadMap))}</span>
+              –<span className="font-mono font-medium text-slate-600">{maxLoad}</span>
+              {" "}(gap: <span className="font-mono font-medium text-slate-600">{maxLoad - Math.min(...Object.values(workloadMap))}</span>)
+            </span>
+            <span>
+              Avg: <span className="font-mono font-medium text-slate-600">{instructors.length > 0 ? (totalAssignments / instructors.length).toFixed(1) : 0}</span> duties/instructor
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function ConstraintBadge({ hardViolations, softPenalty }) {
   const isClean = hardViolations === 0;
   return (
@@ -1074,6 +1247,7 @@ export default function App() {
         .anim-d2 { animation-delay: .12s; }
         .anim-d3 { animation-delay: .18s; }
         .anim-d4 { animation-delay: .24s; }
+        .anim-d5 { animation-delay: .30s; }
         ::-webkit-scrollbar { height: 6px; width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
@@ -1272,6 +1446,14 @@ export default function App() {
                     );
                   })}
                 </div>
+              </div>
+
+              {/* ── INSTRUCTOR WORKLOAD ── */}
+              <div className="anim-fade-up anim-d5">
+                <WorkloadPanel
+                  solution={solverResult.solution}
+                  instructors={problemData.instructors}
+                />
               </div>
             </>
           )}
