@@ -268,12 +268,37 @@ function ImportModal({
     }
   };
 
-  const handleDownloadTemplate = () => {
-    // Mock download action
-    onClose();
-    // The toast is shown from the parent via a callback; here we just signal it.
-    // Since we don't have a direct toast ref, we alert inside modal then close.
-    alert("Template download feature coming soon. A pre-filled .xlsx template will be downloadable from this button.");
+  const handleDownloadTemplate = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/template/download`);
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(
+          response.status === 404
+            ? "Template file not found on the server."
+            : `Server returned ${response.status}: ${errorText}`
+        );
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "exam_template.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      const isNetworkError =
+        err instanceof TypeError && err.message === "Failed to fetch";
+      alert(
+        isNetworkError
+          ? `Could not connect to ${API_BASE_URL}. Make sure the backend is running.`
+          : `Download failed: ${err.message}`
+      );
+    }
   };
 
   return (

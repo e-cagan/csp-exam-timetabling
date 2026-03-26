@@ -49,6 +49,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from fastapi.responses import FileResponse
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -140,7 +141,7 @@ class RoomPayload(BaseModel):
 class InstructorPayload(BaseModel):
     id: int
     is_phd: bool
-    preferences: dict[int, bool]
+    preferences: dict[str, bool] = {}
     name: Optional[str] = None
 
 
@@ -188,7 +189,7 @@ def hydrate_instance(payload: InstancePayload) -> ProblemInstance:
         Instructor(
             id=i.id,
             is_phd=i.is_phd,
-            preferences=i.preferences,
+            preferences={int(k): v for k, v in i.preferences.items()},
         )
         for i in payload.instructors
     ]
@@ -255,6 +256,7 @@ def serialize_from_payload(payload: InstancePayload) -> dict:
                 "id": i.id,
                 "is_phd": i.is_phd,
                 "name": i.name or f"{'Prof.' if i.is_phd else 'RA.'} {i.id}",
+                "preferences": {str(k): v for k, v in i.preferences.items()},
             }
             for i in payload.instructors
         ],
@@ -315,7 +317,8 @@ def serialize_standard_instance(inst: ProblemInstance, course_codes: Optional[li
         ],
         "instructors": [
             {"id": i.id, "is_phd": i.is_phd,
-             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}"}
+             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}",
+             "preferences": {str(k): v for k, v in i.preferences.items()}}
             for i in inst.instructors
         ],
     }
@@ -754,7 +757,8 @@ def _serialize_carter_instance(inst: ProblemInstance) -> dict:
         ],
         "instructors": [
             {"id": i.id, "is_phd": i.is_phd,
-             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}"}
+             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}",
+             "preferences": {str(k): v for k, v in i.preferences.items()}}
             for i in inst.instructors
         ],
     }
@@ -837,3 +841,24 @@ def carter_benchmark_solve(req: CarterSolveRequest = CarterSolveRequest()):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+
+# ══════════════════════════════════════════════════════════════
+#  TEMPLATE DOWNLOAD ENDPOINT
+# ══════════════════════════════════════════════════════════════
+
+TEMPLATE_PATH = Path(__file__).resolve().parent / "data" / "instances" / "exam_template.xlsx"
+
+
+@app.get("/template/download")
+def download_template():
+    """Serve the blank Excel template as a downloadable attachment."""
+    if not TEMPLATE_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template file not found on server: {TEMPLATE_PATH.name}",
+        )
+    return FileResponse(
+        path=str(TEMPLATE_PATH),
+        filename="exam_template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
