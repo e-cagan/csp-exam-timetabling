@@ -80,10 +80,11 @@ app.add_middleware(
 
 class SolverConfig(BaseModel):
     """Solver tuning knobs — shared by generic and benchmark paths."""
-    w1: int = 1
-    w2: int = 5
-    w3: int = 2
-    w4: int = 3
+    # Added weight validation
+    w1: int = Field(default=1, ge=0, le=10)
+    w2: int = Field(default=5, ge=0, le=10)
+    w3: int = Field(default=2, ge=0, le=10)
+    w4: int = Field(default=3, ge=0, le=10)
     enable_s3: bool = True
     enable_s4: bool = True
     time_limit: int = 120

@@ -47,6 +47,7 @@ class Room:
 
     id: int                         # room id
     capacity: int                   # amount of room capacity
+    name: str = ""                  # Room name (optional)
 
     # Edge case detection
     def __post_init__(self):

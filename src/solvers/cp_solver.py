@@ -17,17 +17,25 @@ OR-Tools CP-SAT internally handles:
 
 Hard constraint summary:
   H1 — No Student Time Conflict        (conflict graph → pairwise != on timeslots)
-  H2 — Room Capacity                   (allowed assignments filtering)
-  H3 — No Room Clash                   (combined variable + all_different)
+  H2 — Room Capacity + Online Routing  (allowed assignments filtering)
+  H3 — No Room Clash                   (combined variable + all_different, physical only)
   H4 — Lecturer Conflict (Dual-Role)   (conditional constraint via reification)
   H5 — No Double Invigilation          (conditional constraint via reification)
-  H6 — Minimum Invigilators Per Exam   (sum of booleans >= required)
+  H6 — Minimum Invigilators Per Exam   (sum of booleans == required)
 
 Soft constraint summary:
   S1 — Instructor Time Preference      (element constraint + AND for penalty)
   S2 — Workload Fairness               (min-max load balancing)
-  S3 — Avoid Consecutive Invigilation   (reified slot-activity detection + AND)
-  S4 — Student Consecutive Day Gap      (abs day difference + reified penalty)
+  S3 — Avoid Consecutive Invigilation  (reified slot-activity detection + AND)
+  S4 — Student Consecutive Day Gap     (abs day difference + reified penalty)
+
+Online Exam Handling:
+  Exams with is_online=True (e.g., weekend exams) are routed to a Virtual Room
+  with effectively unlimited capacity (100,000). This virtual room is:
+    - The ONLY allowed room for online exams (H2 routing)
+    - EXCLUDED from physical room clash detection (H3)
+    - Still subject to H1 (student conflicts), H4/H5 (instructor conflicts),
+      H6 (invigilator requirements), and all soft constraints (S1-S4)
 """
 
 from collections import defaultdict
@@ -37,6 +45,13 @@ from ortools.sat.python import cp_model
 from src.utils.conflict_graph import build_conflict_graph
 from src.models.domain import ProblemInstance
 from src.models.solution import Solution
+
+
+# ==================== Virtual Room Detection ====================
+# The virtual room is identified by its capacity (100,000).
+# This constant must match the capacity set in okan_parser.py and api.py
+# when creating the virtual room for online exams.
+VIRTUAL_ROOM_CAPACITY = 100000
 
 
 def solve(
@@ -54,10 +69,10 @@ def solve(
 
     Args:
         instance: The problem instance containing exams, rooms, timeslots, instructors.
-        w1: Weight for S1 (instructor preference penalty).
-        w2: Weight for S2 (workload fairness penalty).
-        w3: Weight for S3 (consecutive invigilation penalty).
-        w4: Weight for S4 (student consecutive day penalty).
+        w1: Weight for S1 (instructor preference penalty). Range: 0-10.
+        w2: Weight for S2 (workload fairness penalty). Range: 0-10.
+        w3: Weight for S3 (consecutive invigilation penalty). Range: 0-10.
+        w4: Weight for S4 (student consecutive day penalty). Range: 0-10.
         enable_s3: Whether to include S3 (can be slow for large instances).
         enable_s4: Whether to include S4 (can be slow for many students).
         time_limit: Maximum solver time in seconds.
@@ -68,8 +83,40 @@ def solve(
 
     model = cp_model.CpModel()
 
-    # ==================== Conflict Graph ====================
+    # ==================== Precomputation ====================
+
+    # Conflict graph: which exam pairs share students (used for H1)
     conflict_graph = build_conflict_graph(exams=instance.exams)
+
+    # Virtual room detection: find the room with capacity >= VIRTUAL_ROOM_CAPACITY.
+    # This room acts as a "sink" for online exams — unlimited capacity, no physical clash.
+    # If no virtual room exists (e.g., Carter benchmark), virtual_room_id = -1
+    # and all online-related logic is safely skipped.
+    virtual_room_id = next(
+        (r.id for r in instance.rooms if r.capacity >= VIRTUAL_ROOM_CAPACITY),
+        -1
+    )
+
+    # Precompute which exams are "virtual" — they go to the virtual room.
+    # An exam is virtual if:
+    #   1) It's explicitly marked as online (exam.is_online == True), OR
+    #   2) It's too large for ANY physical room (oversized fallback)
+    #
+    # Case 2 handles real-world scenarios where a 400-student exam has no
+    # physical room big enough — it gets routed to virtual room as a
+    # "multi-room / overflow" placeholder. This prevents H2 infeasibility.
+    physical_room_max_cap = max(
+        (r.capacity for r in instance.rooms if r.id != virtual_room_id),
+        default=0
+    )
+
+    virtual_exam_ids = set()
+    for exam in instance.exams:
+        if exam.is_online:
+            virtual_exam_ids.add(exam.id)
+        elif virtual_room_id != -1 and len(exam.student_ids) > physical_room_max_cap:
+            # Oversized exam: no physical room can hold it → force to virtual room
+            virtual_exam_ids.add(exam.id)
 
     # ==================== Decision Variables ====================
     # 1) Timeslot & Room (per exam):
@@ -83,83 +130,138 @@ def solve(
     exam_rooms = {}
 
     for exam in instance.exams:
-        exam_times[exam.id] = model.new_int_var(0, len(instance.timeslots) - 1, f"time_{exam.id}")
-        exam_rooms[exam.id] = model.new_int_var(0, len(instance.rooms) - 1, f"room_{exam.id}")
+        exam_times[exam.id] = model.new_int_var(
+            0, len(instance.timeslots) - 1, f"time_{exam.id}"
+        )
+        exam_rooms[exam.id] = model.new_int_var(
+            0, len(instance.rooms) - 1, f"room_{exam.id}"
+        )
 
     invigilator = {}
     for exam in instance.exams:
         invigilator[exam.id] = {}
         for inst in instance.instructors:
-            invigilator[exam.id][inst.id] = model.new_bool_var(f"invig_{exam.id}_{inst.id}")
+            invigilator[exam.id][inst.id] = model.new_bool_var(
+                f"invig_{exam.id}_{inst.id}"
+            )
 
     # ======================== HARD CONSTRAINTS ========================
 
     # ==================== H1: No Student Time Conflict ====================
     # students(e_a) ∩ students(e_b) ≠ ∅ → X_ea ≠ X_eb
     # Conflicting exams must be in different timeslots.
+    #
+    # This applies to ALL exams — including online ones.
+    # A student cannot take two exams simultaneously even if both are online.
 
     for exam_a, neighbors in conflict_graph.items():
         for exam_b in neighbors:
             if exam_a < exam_b:
                 model.add(exam_times[exam_a] != exam_times[exam_b])
 
-    # ==================== H2: Room Capacity ====================
-    # |students(e)| ≤ capacity(Y_e)
-    # Each exam's room variable is restricted to rooms with sufficient capacity.
-    
-    virtual_room_id = next((r.id for r in instance.rooms if r.capacity == 100000), -1)
+    # ==================== H2: Room Capacity + Online Routing ====================
+    # Two-tier room assignment logic:
+    #
+    # VIRTUAL EXAMS (online or oversized):
+    #   → Can ONLY be assigned to the virtual room.
+    #   → Enforced by fixing exam_rooms[eid] == virtual_room_id.
+    #   → Virtual room has capacity 100,000 so capacity check passes trivially.
+    #
+    # PHYSICAL EXAMS (face-to-face):
+    #   → Can ONLY be assigned to physical rooms with sufficient capacity.
+    #   → Virtual room is explicitly EXCLUDED from their allowed list.
+    #   → This prevents the solver from "cheating" by putting a physical exam
+    #     into the virtual room to avoid room clash constraints.
+    #
+    # This separation is the key architectural decision for online exam support.
+    # It ensures clean domain separation: online ↔ physical never mix rooms.
 
     for exam in instance.exams:
         student_count = len(exam.student_ids)
-        
-        if exam.is_online:
-            allowed_rooms = [virtual_room_id]
+
+        if exam.id in virtual_exam_ids:
+            # Virtual exam: force to virtual room directly.
+            # Using model.add() instead of add_allowed_assignments is more efficient
+            # for single-value constraints — the solver propagates it immediately.
+            model.add(exam_rooms[exam.id] == virtual_room_id)
         else:
-            # Sadece fiziksel olan ve kapasitesi yeten odaları al
-            allowed_rooms = [r.id for r in instance.rooms if r.capacity >= student_count and r.id != virtual_room_id]
-            
-            # Eğer fiziksel hiçbir sınıf yetmiyorsa (Devasa Sınav), mecburen sanal odaya (multi-room) yönlendir
+            # Physical exam: only rooms with enough capacity, excluding virtual room.
+            allowed_rooms = [
+                r.id for r in instance.rooms
+                if r.capacity >= student_count and r.id != virtual_room_id
+            ]
+
+            # Safety fallback: if somehow no physical room fits (shouldn't happen
+            # if virtual_exam_ids was computed correctly, but defensive programming)
             if not allowed_rooms:
                 allowed_rooms = [virtual_room_id]
-                
-        model.add_allowed_assignments([exam_rooms[exam.id]], [(r,) for r in allowed_rooms])
+                virtual_exam_ids.add(exam.id)
 
-    # ==================== H3: No Room Clash ====================
+            model.add_allowed_assignments(
+                [exam_rooms[exam.id]], [(r,) for r in allowed_rooms]
+            )
+
+    # ==================== H3: No Room Clash (Physical Exams Only) ====================
     # Y_ea = Y_eb → X_ea ≠ X_eb
+    # Two exams cannot be in the same physical room at the same timeslot.
+    #
     # Encoded as: combined = timeslot * num_rooms + room, then all_different.
+    # Each unique (timeslot, room) pair produces a unique combined integer.
+    # If all combined values are different → no two exams share a (slot, room).
+    #
+    # CRITICAL: Virtual exams are EXCLUDED from this constraint.
+    # Multiple online exams CAN share the virtual room in the same timeslot —
+    # that's the whole point of online exams having unlimited capacity.
+    # Including virtual exams in all_different would make the problem infeasible
+    # whenever more than one online exam exists in the same slot.
 
     num_rooms = len(instance.rooms)
     combined = []
 
     for exam in instance.exams:
-        # Eğer bir sınav H2 aşamasında sanal odaya gitmeye MECBUR kaldıysa
-        # (Ya online olduğu için ya da çok devasa olduğu için), onu H3 testinden muaf tut.
-        is_oversized = not any(r.capacity >= len(exam.student_ids) for r in instance.rooms if r.id != virtual_room_id)
-        
-        if exam.is_online or is_oversized:
-            model.add(exam_rooms[exam.id] == virtual_room_id)
-        else:
-            # Sadece normal fiziksel sınavlar "AllDifferent" (Çakışmama) testine girer
-            c_var = model.new_int_var(
-                0, len(instance.timeslots) * num_rooms - 1, f"combined_{exam.id}"
-            )
-            model.add(c_var == exam_times[exam.id] * num_rooms + exam_rooms[exam.id])
-            combined.append(c_var)
+        if exam.id in virtual_exam_ids:
+            # Virtual exam: skip H3 entirely.
+            # Room is already fixed to virtual_room_id by H2 above.
+            continue
 
-    model.add_all_different(combined)
+        # Physical exam: create combined variable and add to all_different set.
+        c_var = model.new_int_var(
+            0, len(instance.timeslots) * num_rooms - 1,
+            f"combined_{exam.id}"
+        )
+        model.add(
+            c_var == exam_times[exam.id] * num_rooms + exam_rooms[exam.id]
+        )
+        combined.append(c_var)
+
+    # Apply all_different only to physical exam combined variables.
+    if combined:
+        model.add_all_different(combined)
 
     # ==================== H6: Minimum Invigilators Per Exam ====================
-    # Σ_i Z_{e,i} ≥ required(e)
+    # Σ_i Z_{e,i} == required(e)
+    #
+    # Using == instead of >= because:
+    #   - It's tighter (fewer unnecessary assignments to explore)
+    #   - S2 fairness works better when total assignments is fixed
+    #   - required_invigilators already accounts for the minimum need
+    #
+    # This applies to ALL exams — online exams still need invigilators
+    # (proctors monitor online sessions too).
 
     for exam in instance.exams:
         model.add(
-            sum(invigilator[exam.id][inst.id] for inst in instance.instructors) == exam.required_invigilators
+            sum(invigilator[exam.id][inst.id] for inst in instance.instructors)
+            == exam.required_invigilators
         )
 
     # ==================== H4 & H5: Lecturer Conflict and Double Invigilation ====================
     # H5: An instructor cannot invigilate two exams in the same timeslot.
     # H4: A lecturer cannot invigilate another exam in the same timeslot as their own.
     # Both use reified "same_slot" booleans with only_enforce_if.
+    #
+    # These apply to ALL exams including online — an instructor cannot proctor
+    # two simultaneous online exams either.
 
     for i in range(len(instance.exams)):
         for j in range(i + 1, len(instance.exams)):
@@ -170,13 +272,13 @@ def solve(
             model.add(exam_times[e_a] == exam_times[e_b]).only_enforce_if(same_slot)
             model.add(exam_times[e_a] != exam_times[e_b]).only_enforce_if(same_slot.negated())
 
-            # H5
+            # H5: No instructor can invigilate both exams if they're in the same slot
             for inst in instance.instructors:
                 model.add(
                     invigilator[e_a][inst.id] + invigilator[e_b][inst.id] <= 1
                 ).only_enforce_if(same_slot)
 
-            # H4
+            # H4: Lecturer of exam A cannot invigilate exam B in the same slot (and vice versa)
             lec_a = instance.exams[i].lecturer_id
             lec_b = instance.exams[j].lecturer_id
 
@@ -202,8 +304,12 @@ def solve(
 
     for exam in instance.exams:
         for inst in instance.instructors:
-            dislike = [0 if inst.preferences.get(t, True) else 1 for t in range(len(instance.timeslots))]
+            dislike = [
+                0 if inst.preferences.get(t, True) else 1
+                for t in range(len(instance.timeslots))
+            ]
 
+            # Skip if instructor has no dislikes — no penalty possible
             if sum(dislike) == 0:
                 continue
 
@@ -211,7 +317,9 @@ def solve(
             model.add_element(exam_times[exam.id], dislike, slot_penalty)
 
             penalty_var = model.new_int_var(0, 1, f"s1_{exam.id}_{inst.id}")
-            model.add_min_equality(penalty_var, [slot_penalty, invigilator[exam.id][inst.id]])
+            model.add_min_equality(
+                penalty_var, [slot_penalty, invigilator[exam.id][inst.id]]
+            )
 
             s1_cost.append(penalty_var)
 
@@ -225,7 +333,9 @@ def solve(
     loads = []
     for inst in instance.instructors:
         load = model.new_int_var(0, len(instance.exams), f"load_{inst.id}")
-        model.add(load == sum(invigilator[exam.id][inst.id] for exam in instance.exams))
+        model.add(
+            load == sum(invigilator[exam.id][inst.id] for exam in instance.exams)
+        )
         loads.append(load)
 
     max_load = model.new_int_var(0, len(instance.exams), "max_load")
@@ -264,30 +374,58 @@ def solve(
                 active_late_list = []
 
                 for exam in instance.exams:
-                    is_in_early = model.new_bool_var(f"s3_ie_{exam.id}_{inst.id}_{t_early}")
-                    model.add(exam_times[exam.id] == t_early).only_enforce_if(is_in_early)
-                    model.add(exam_times[exam.id] != t_early).only_enforce_if(is_in_early.negated())
+                    # Early slot: is exam here AND is instructor assigned?
+                    is_in_early = model.new_bool_var(
+                        f"s3_ie_{exam.id}_{inst.id}_{t_early}"
+                    )
+                    model.add(
+                        exam_times[exam.id] == t_early
+                    ).only_enforce_if(is_in_early)
+                    model.add(
+                        exam_times[exam.id] != t_early
+                    ).only_enforce_if(is_in_early.negated())
 
-                    both_early = model.new_bool_var(f"s3_be_{exam.id}_{inst.id}_{t_early}")
-                    model.add_min_equality(both_early, [is_in_early, invigilator[exam.id][inst.id]])
+                    both_early = model.new_bool_var(
+                        f"s3_be_{exam.id}_{inst.id}_{t_early}"
+                    )
+                    model.add_min_equality(
+                        both_early, [is_in_early, invigilator[exam.id][inst.id]]
+                    )
                     active_early_list.append(both_early)
 
-                    is_in_late = model.new_bool_var(f"s3_il_{exam.id}_{inst.id}_{t_late}")
-                    model.add(exam_times[exam.id] == t_late).only_enforce_if(is_in_late)
-                    model.add(exam_times[exam.id] != t_late).only_enforce_if(is_in_late.negated())
+                    # Late slot: same logic
+                    is_in_late = model.new_bool_var(
+                        f"s3_il_{exam.id}_{inst.id}_{t_late}"
+                    )
+                    model.add(
+                        exam_times[exam.id] == t_late
+                    ).only_enforce_if(is_in_late)
+                    model.add(
+                        exam_times[exam.id] != t_late
+                    ).only_enforce_if(is_in_late.negated())
 
-                    both_late = model.new_bool_var(f"s3_bl_{exam.id}_{inst.id}_{t_late}")
-                    model.add_min_equality(both_late, [is_in_late, invigilator[exam.id][inst.id]])
+                    both_late = model.new_bool_var(
+                        f"s3_bl_{exam.id}_{inst.id}_{t_late}"
+                    )
+                    model.add_min_equality(
+                        both_late, [is_in_late, invigilator[exam.id][inst.id]]
+                    )
                     active_late_list.append(both_late)
 
+                # OR: instructor active in slot if they invigilate at least one exam there
                 active_in_early = model.new_bool_var(f"s3_ae_{inst.id}_{t_early}")
                 model.add_max_equality(active_in_early, active_early_list)
 
                 active_in_late = model.new_bool_var(f"s3_al_{inst.id}_{t_late}")
                 model.add_max_equality(active_in_late, active_late_list)
 
-                consec_penalty = model.new_bool_var(f"s3_{inst.id}_{t_early}_{t_late}")
-                model.add_min_equality(consec_penalty, [active_in_early, active_in_late])
+                # AND: penalty if active in both consecutive slots
+                consec_penalty = model.new_bool_var(
+                    f"s3_{inst.id}_{t_early}_{t_late}"
+                )
+                model.add_min_equality(
+                    consec_penalty, [active_in_early, active_in_late]
+                )
                 s3_cost.append(consec_penalty)
 
     # ==================== S4: Student Consecutive Day Gap ====================
@@ -300,33 +438,24 @@ def solve(
     # The goal is to ensure at least 1 empty day between any two exams
     # for each student: |day(e_a) - day(e_b)| ≥ 2 is the desired condition.
     #
+    # This applies to ALL exams including online — from a student's perspective,
+    # having an online exam on Monday and a physical exam on Tuesday is still
+    # exhausting. The exam mode doesn't reduce the student's burden.
+    #
     # Implementation steps:
-    #   1) Derive exam_day variables from exam_times using integer division:
-    #      exam_day[eid] = exam_times[eid] // periods_per_day
-    #      CP-SAT provides add_division_equality(target, numerator, denominator)
-    #
+    #   1) Derive exam_day variables from exam_times using integer division
     #   2) Build a reverse mapping: student_id → list of exam_ids
-    #      This inverts the exam.student_ids sets so we can iterate per-student.
+    #   3) For each student, for each pair of their exams: penalize if |day_diff| ≤ 1
     #
-    #   3) For each student, for each pair of their exams:
-    #      - Compute the absolute day difference: |day_a - day_b|
-    #        CP-SAT provides add_abs_equality(target, expression)
-    #      - If abs_diff ≤ 1, incur a penalty of 1
-    #        Using reification: penalty=1 ↔ abs_diff ≤ 1
-    #
-    # Variable count: O(students × avg_exams_per_student²). For hec-s-92 with
-    # 2823 students averaging ~4 exams each: ~2823 × 6 pairs = ~17,000 variables.
-    #
-    # NOTE: For very large instances (10,000+ students), consider sampling or
-    # disable via enable_s4=False. Alternatively, limit to students with 3+ exams.
+    # Variable count: O(students × avg_exams_per_student²).
 
     s4_cost = []
 
     if enable_s4:
         # Step 1: Create exam_day variables via integer division
-        # exam_day[eid] = exam_times[eid] ÷ periods_per_day (integer division)
+        # exam_day[eid] = exam_times[eid] ÷ periods_per_day
         # This extracts the day index from the timeslot index.
-        # Example: periods_per_day=3, timeslot=7 → day=2 (7÷3=2), period=1 (7%3=1)
+        # Example: periods_per_day=5, timeslot=12 → day=2 (12÷5=2), period=2 (12%5=2)
 
         periods_per_day = max(t.period for t in instance.timeslots) + 1
         n_days = max(t.day for t in instance.timeslots) + 1
@@ -334,22 +463,17 @@ def solve(
         exam_day = {}
         for exam in instance.exams:
             exam_day[exam.id] = model.new_int_var(0, n_days - 1, f"day_{exam.id}")
-            model.add_division_equality(exam_day[exam.id], exam_times[exam.id], periods_per_day)
+            model.add_division_equality(
+                exam_day[exam.id], exam_times[exam.id], periods_per_day
+            )
 
         # Step 2: Build reverse mapping — student_id → [exam_ids]
-        # We invert the exam.student_ids relationship so we can iterate
-        # per-student and find all their exam pairs efficiently.
-        # defaultdict(list) avoids KeyError for students with only 1 exam.
-
         student_exams = defaultdict(list)
         for exam in instance.exams:
             for sid in exam.student_ids:
                 student_exams[sid].append(exam.id)
 
         # Step 3: For each student, penalize exam pairs with |day_diff| ≤ 1
-        # Only consider students with 2+ exams (otherwise no pair to check).
-        # Within each student, iterate pairs with i < j to avoid duplicates.
-
         for sid, eids in student_exams.items():
             if len(eids) < 2:
                 continue
@@ -359,24 +483,21 @@ def solve(
                     e_a = eids[i]
                     e_b = eids[j]
 
-                    # Compute signed difference: diff = day_a - day_b
-                    # Range is [-n_days+1, n_days-1] to cover all possibilities
-                    diff = model.new_int_var(-(n_days - 1), n_days - 1, f"s4_diff_{sid}_{e_a}_{e_b}")
+                    # Signed difference: day_a - day_b
+                    diff = model.new_int_var(
+                        -(n_days - 1), n_days - 1,
+                        f"s4_diff_{sid}_{e_a}_{e_b}"
+                    )
                     model.add(diff == exam_day[e_a] - exam_day[e_b])
 
-                    # Compute absolute difference: abs_diff = |diff|
-                    # CP-SAT's add_abs_equality handles this natively
-                    abs_diff = model.new_int_var(0, n_days - 1, f"s4_abs_{sid}_{e_a}_{e_b}")
+                    # Absolute difference: |day_a - day_b|
+                    abs_diff = model.new_int_var(
+                        0, n_days - 1,
+                        f"s4_abs_{sid}_{e_a}_{e_b}"
+                    )
                     model.add_abs_equality(abs_diff, diff)
 
-                    # Reified penalty: penalty = 1 ↔ abs_diff ≤ 1
-                    # If the day gap is 0 (same day) or 1 (consecutive days),
-                    # the student doesn't have enough rest → penalty.
-                    # If abs_diff ≥ 2, there's at least one rest day → no penalty.
-                    #
-                    # Reification ensures the boolean is EXACTLY equivalent:
-                    #   penalty=True  enforces abs_diff ≤ 1
-                    #   penalty=False enforces abs_diff ≥ 2
+                    # Reified penalty: penalty=1 ↔ abs_diff ≤ 1
                     penalty = model.new_bool_var(f"s4_{sid}_{e_a}_{e_b}")
                     model.add(abs_diff <= 1).only_enforce_if(penalty)
                     model.add(abs_diff >= 2).only_enforce_if(penalty.negated())
@@ -386,7 +507,7 @@ def solve(
     # ==================== Objective Function ====================
     # F = w1 * Σ(S1) + w2 * S2 + w3 * Σ(S3) + w4 * Σ(S4)
     #
-    # Weights reflect priority:
+    # Weights reflect priority (0-10 range, configurable from frontend):
     #   w2=5 (fairness is primary goal)
     #   w4=3 (student comfort is important)
     #   w3=2 (instructor scheduling comfort)
