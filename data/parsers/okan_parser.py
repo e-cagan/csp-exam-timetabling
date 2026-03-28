@@ -10,20 +10,20 @@ from src.models.domain import Exam, TimeSlot, Room, Instructor, ProblemInstance
 def parse_okan(
     student_excel_path: str,
     schedule_excel_path: str,
-    exams_sheet_name: str = "FINAL(8-18 OCAK)"
-) -> ProblemInstance:
+    exams_sheet_name: str = "FINAL(8-18 OCAK)",
+    instructors_sheet_name: str = "İZİN GÜNLERİ",
+    rooms_sheet_name: str = "DERSLİK KAPASİTE"
+) -> tuple[ProblemInstance, list[str]]:
     """
-    Parses messy real-world Excel files and builds a ProblemInstance.
-    Handles heterogeneous exam modes (online vs. face-to-face) via Virtual Rooms.
-    Features robust header detection to bypass Excel title rows.
+    Returns: (ProblemInstance, list_of_real_course_codes)
     """
 
-    print("Reading data from Excel files (applying robust header detection)...")
+    print(f"Reading data from Excel files...")
 
     # ==========================================
     # STEP 1: Parse Rooms & Create Virtual Room
     # ==========================================
-    df_rooms = pd.read_excel(schedule_excel_path, sheet_name="DERSLİK KAPASİTE")
+    df_rooms = pd.read_excel(schedule_excel_path, sheet_name=rooms_sheet_name)
     
     rooms = []
     room_name_to_id = {}
@@ -35,24 +35,20 @@ def parse_okan(
         
         if pd.isna(room_name) or room_name == 'nan':
             continue
-            
         if isinstance(capacity, str):
             capacity = int(''.join(filter(str.isdigit, capacity)))
             
-        rooms.append(Room(id=room_id_counter, capacity=int(capacity)))
+        rooms.append(Room(id=room_id_counter, capacity=int(capacity), name=room_name))
         room_name_to_id[room_name] = room_id_counter
         room_id_counter += 1
 
-    # Virtual Room for ONLINE exams
     VIRTUAL_ROOM_ID = room_id_counter 
-    rooms.append(Room(id=VIRTUAL_ROOM_ID, capacity=100000))
+    rooms.append(Room(id=VIRTUAL_ROOM_ID, capacity=100000, name="ONLINE"))
 
     # ==========================================
-    # STEP 2: Parse Instructors Metadata (Delayed Instantiation)
+    # STEP 2: Parse Instructors Metadata & OFF DAYS
     # ==========================================
-    # We delay creating Instructor objects until timeslots are parsed to satisfy domain rules.
-    df_inst_raw = pd.read_excel(schedule_excel_path, sheet_name="İZİN GÜNLERİ", header=None)
-    
+    df_inst_raw = pd.read_excel(schedule_excel_path, sheet_name=instructors_sheet_name, header=None)
     header_idx_inst = 0
     for i, row in df_inst_raw.iterrows():
         if any('UNVAN' in str(val).upper() for val in row.values):
@@ -62,7 +58,7 @@ def parse_okan(
     df_inst_raw.columns = [str(c).strip() for c in df_inst_raw.iloc[header_idx_inst].values]
     df_inst = df_inst_raw.iloc[header_idx_inst + 1:]
     
-    instructor_meta = {} # Temporary storage for instructor attributes
+    instructor_meta = {} 
     inst_name_to_id = {}
     inst_id_counter = 0
 
@@ -76,8 +72,10 @@ def parse_okan(
             
         is_phd = "AR. GÖR" in raw_name.upper()
         
-        # Store metadata for later instantiation
-        instructor_meta[inst_id_counter] = {"is_phd": is_phd, "name": raw_name}
+        # HOCANIN İZİN GÜNLERİNİ BİRLEŞTİR VE KAYDET
+        off_days = str(row.get('İZİN GÜNÜ -1', '')) + " " + str(row.get('İZİN GÜNÜ-2', '')) + " " + str(row.get('İZİN GÜNÜ-3', ''))
+        
+        instructor_meta[inst_id_counter] = {"is_phd": is_phd, "name": raw_name, "off_days": off_days.upper()}
         inst_name_to_id[raw_name] = inst_id_counter
         inst_id_counter += 1
 
@@ -85,7 +83,6 @@ def parse_okan(
     # STEP 3: Parse Exam Schedule & Timeslots
     # ==========================================
     df_exams_raw = pd.read_excel(schedule_excel_path, sheet_name=exams_sheet_name, header=None)
-    
     header_idx_exams = 0
     for i, row in df_exams_raw.iterrows():
         if any('DERS KODU' in str(val).upper() for val in row.values):
@@ -98,12 +95,12 @@ def parse_okan(
     timeslots = []
     exams_metadata = {} 
     timeslot_map = {} 
+    ts_id_to_day_name = {} # Hangi timeslot hangi güne (Pazartesi, Cuma vb.) denk geliyor?
     ts_id_counter = 0
     valid_exam_codes = []
 
     for index, row in df_exams.iterrows():
         course_code = str(row.get('Ders Kodu', '')).strip()
-        
         if pd.isna(course_code) or course_code == 'nan' or course_code == 'None' or course_code == '':
             continue
             
@@ -119,69 +116,57 @@ def parse_okan(
             ts_period = ts_id_counter % 5
             timeslots.append(TimeSlot(id=ts_id_counter, day=ts_day, period=ts_period))
             timeslot_map[ts_key] = ts_id_counter
+            ts_id_to_day_name[ts_id_counter] = date_str.upper() # Günü kaydet
             ts_id_counter += 1
             
-        is_online = "ONLINE" in room_str or "ON LINE" in room_str
+        is_weekend = "CUMARTESİ" in date_str.upper() or "PAZAR" in date_str.upper()
+        is_online = "ONLINE" in room_str or "ON LINE" in room_str or is_weekend
         
         lecturer_name = str(row.get('Öğretim Elemanı', '')).strip()
         lecturer_id = inst_name_to_id.get(lecturer_name, 0) 
         
-        exams_metadata[course_code] = {
-            "is_online": is_online,
-            "lecturer_id": lecturer_id
-        }
+        exams_metadata[course_code] = {"is_online": is_online, "lecturer_id": lecturer_id}
 
     # ==========================================
-    # STEP 3.5: Instantiate Instructor Objects
+    # STEP 3.5: Instantiate Instructor Objects with REAL PREFERENCES
     # ==========================================
-    # Now that we have all timeslots, we can build the preferences dict without triggering domain ValueError.
+    DAY_NAMES = ["PAZARTESİ", "SALI", "ÇARŞAMBA", "PERŞEMBE", "CUMA", "CUMARTESİ", "PAZAR"]
     instructors = []
+    
     for inst_id, meta in instructor_meta.items():
-        # Default all timeslots to True (available)
-        prefs = {ts.id: True for ts in timeslots}
+        prefs = {}
+        off_days_str = meta["off_days"]
+        
+        for ts in timeslots:
+            ts_day_name = ts_id_to_day_name[ts.id]
+            # Eğer timeslot'un günü, hocanın izinli olduğu günlerden biriyse -> Müsait Değil (False)
+            is_off = any(day in ts_day_name and day in off_days_str for day in DAY_NAMES)
+            prefs[ts.id] = not is_off
+            
         instructors.append(Instructor(id=inst_id, is_phd=meta["is_phd"], preferences=prefs))
 
     # ==========================================
-    # STEP 4: Parse Students (Conflict Graph Base)
+    # STEP 4 & 5: Parse Students and Assemble Exams
     # ==========================================
     df_students = pd.read_excel(student_excel_path)
     df_students.columns = [str(c).strip() for c in df_students.columns]
     
     exam_students_map = defaultdict(set)
-    
     for index, row in df_students.iterrows():
         if 'Ders Kodu' not in df_students.columns or 'Öğrenci No' not in df_students.columns:
             continue
-            
         course_code = str(row['Ders Kodu']).strip()
         raw_student_id = row['Öğrenci No']
-        
         if course_code in valid_exam_codes and not pd.isna(raw_student_id):
-            raw_str = str(raw_student_id).strip()
-            
-            # YENİ MANTIK: Anonim (STD) ve Orijinal (ÇAP -1) ID'leri güvenle ayır
-            if "STD" in raw_str.upper():
-                # Anonim veri formatı: "STD-0489" -> "0489" -> 489
-                clean_student_id = ''.join(filter(str.isdigit, raw_str))
-            else:
-                # Orijinal Okan verisi formatı: "200212003-1" -> "200212003"
-                clean_student_id = raw_str.split('-')[0]
-                clean_student_id = ''.join(filter(str.isdigit, clean_student_id))
-            
-            if clean_student_id: # Eğer tamamen boş dönmediyse set'e ekle
+            clean_student_id = str(raw_student_id).split('-')[0].strip()
+            clean_student_id = ''.join(filter(str.isdigit, clean_student_id))
+            if clean_student_id: 
                 exam_students_map[course_code].add(int(clean_student_id))
 
-    # ==========================================
-    # STEP 5: Assemble Final Exam Objects
-    # ==========================================
     exams = []
     exam_id_counter = 0
-    
     for course_code in valid_exam_codes:
         students = exam_students_map.get(course_code, set())
-        
-        # YENİ MANTIK: Öğrencisi 0 olan sınavları programa HİÇ DAHİL ETME!
-        # Dummy student eklemek yerine bu sınavı direkt atlıyoruz (Drop missing data).
         if len(students) == 0:
             continue 
             
@@ -200,9 +185,5 @@ def parse_okan(
 
     print(f"Parsing complete. Found {len(exams)} exams, {len(rooms)} rooms, {len(instructors)} instructors.")
 
-    return ProblemInstance(
-        exams=exams,
-        timeslots=timeslots,
-        rooms=rooms,
-        instructors=instructors
-    )
+    # ARTIK GERÇEK DERS KODLARINI DA DÖNÜYORUZ!
+    return ProblemInstance(exams=exams, timeslots=timeslots, rooms=rooms, instructors=instructors), valid_exam_codes

@@ -245,11 +245,8 @@ def serialize_from_payload(payload: InstancePayload) -> dict:
             for ts in payload.timeslots
         ],
         "rooms": [
-            {
-                "id": r.id,
-                "capacity": r.capacity,
-                "label": r.label or f"R-{str(r.id + 1).zfill(2)}",
-            }
+            {"id": r.id, "capacity": r.capacity,
+             "label": r.label or f"R-{str(r.id + 1).zfill(2)}"}
             for r in payload.rooms
         ],
         "instructors": [
@@ -313,7 +310,8 @@ def serialize_standard_instance(inst: ProblemInstance, course_codes: Optional[li
         ],
         "rooms": [
             {"id": r.id, "capacity": r.capacity,
-             "label": f"R-{str(r.id + 1).zfill(2)}"}
+             # GÜNCELLEME: R-02 yerine gerçek oda ismini (name) alıyoruz
+             "label": getattr(r, "name", "") or f"R-{str(r.id + 1).zfill(2)}"}
             for r in inst.rooms
         ],
         "instructors": [
@@ -393,6 +391,9 @@ def run_solver(
 
     # ── Success ──────────────────────────────────────────────
     solution_dict = solution.to_dict()
+
+    # EKSİK OLAN SATIR: Frontend için oda eşleştirme haritası
+    solution_dict["room_map"] = {str(r.id): getattr(r, "name", "") or f"R-{str(r.id + 1).zfill(2)}" for r in instance.rooms}
 
     s1 = solver_stats.get("s1_penalty", 0)
     s2 = solver_stats.get("s2_penalty", 0)
@@ -548,27 +549,17 @@ class OkanSolveRequest(BaseModel):
 def _parse_okan_benchmark() -> tuple[ProblemInstance, list[str]]:
     """Load and parse the Okan anonymized benchmark via the original okan_parser."""
     if not OKAN_STUDENT_PATH.exists():
-        raise FileNotFoundError(
-            f"Okan student file not found: {OKAN_STUDENT_PATH}. "
-            f"Place ANON_Ders_Inceleme_Raporu.xlsx in data/instances/anonymusokan/"
-        )
+        raise FileNotFoundError(f"Okan student file not found: {OKAN_STUDENT_PATH}")
     if not OKAN_SCHEDULE_PATH.exists():
-        raise FileNotFoundError(
-            f"Okan schedule file not found: {OKAN_SCHEDULE_PATH}. "
-            f"Place ANON_Guz_Final.xlsx in data/instances/anonymusokan/"
-        )
- 
-    instance = parse_okan(
+        raise FileNotFoundError(f"Okan schedule file not found: {OKAN_SCHEDULE_PATH}")
+
+    # PARSER ARTIK BİZE GERÇEK DERS KODLARINI DA (MATH113 vb.) DÖNECEK
+    instance, course_codes = parse_okan(
         student_excel_path=str(OKAN_STUDENT_PATH),
         schedule_excel_path=str(OKAN_SCHEDULE_PATH),
         exams_sheet_name=OKAN_EXAMS_SHEET,
     )
- 
-    # Derive course codes directly from the ProblemInstance.
-    # The parser assigns sequential integer IDs; we mirror the
-    # anonymized CRS-xxx naming so labels stay meaningful.
-    course_codes = [f"CRS-{e.id + 1:03d}" for e in instance.exams]
- 
+
     return instance, course_codes
  
  
