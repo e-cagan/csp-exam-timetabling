@@ -910,7 +910,7 @@ function SolverConfigPanel({ config, onChange, onReset, disabled }) {
                   <input
                     type="range"
                     min={30}
-                    max={600}
+                    max={1200}
                     step={30}
                     value={config.time_limit}
                     disabled={disabled}
