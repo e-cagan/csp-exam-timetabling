@@ -605,11 +605,12 @@ function ImportModal({
 function SolverOverlay({ elapsedSeconds, stage }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm">
+      {/* BURADAKİ CLASS'LARA flex, flex-col ve items-center EKLENDİ */}
       <div
-        className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center"
+        className="flex flex-col items-center justify-center bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center"
         style={{ animation: "modalIn .3s cubic-bezier(.16,1,.3,1)" }}
       >
-        <div className="relative w-20 h-20 mx-auto mb-5">
+        <div className="relative w-20 h-20 mb-5">
           <svg className="w-20 h-20 indeterminate-spin" viewBox="0 0 80 80">
             <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="5" />
             <circle
@@ -1322,7 +1323,7 @@ export default function App() {
   const showToast = useCallback((type, title, message, duration = 6000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ type, title, message });
-    
+
     if (type !== "error") {
       toastTimerRef.current = setTimeout(() => setToast(null), duration);
     }
