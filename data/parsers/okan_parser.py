@@ -157,11 +157,16 @@ def parse_okan(
         raw_student_id = row['Öğrenci No']
         
         if course_code in valid_exam_codes and not pd.isna(raw_student_id):
-            # ÇAP/Yandal gibi durumlardaki '-1' eklerini temizle ve ana ID'yi al
-            clean_student_id = str(raw_student_id).split('-')[0].strip()
+            raw_str = str(raw_student_id).strip()
             
-            # Harf vs. kalmış olma ihtimaline karşı sadece rakamları filtrele
-            clean_student_id = ''.join(filter(str.isdigit, clean_student_id))
+            # YENİ MANTIK: Anonim (STD) ve Orijinal (ÇAP -1) ID'leri güvenle ayır
+            if "STD" in raw_str.upper():
+                # Anonim veri formatı: "STD-0489" -> "0489" -> 489
+                clean_student_id = ''.join(filter(str.isdigit, raw_str))
+            else:
+                # Orijinal Okan verisi formatı: "200212003-1" -> "200212003"
+                clean_student_id = raw_str.split('-')[0]
+                clean_student_id = ''.join(filter(str.isdigit, clean_student_id))
             
             if clean_student_id: # Eğer tamamen boş dönmediyse set'e ekle
                 exam_students_map[course_code].add(int(clean_student_id))

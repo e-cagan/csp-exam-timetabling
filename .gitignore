@@ -26,3 +26,6 @@ frontend/build/
 .DS_Store
 Thumbs.db
 *.log
+
+# --- Private School Data ---
+data/instances/okan/

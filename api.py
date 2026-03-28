@@ -1,37 +1,39 @@
 """
 FastAPI backend for the University Exam Timetabling System.
 
-Architecture (v3 — decoupled):
-    The API has two distinct data paths that share ZERO logic:
+Architecture (v4 — Universal Import + Benchmarks):
+    The API now supports three distinct data paths:
 
-    ┌─────────────────────────────────────────────────────┐
-    │  GENERIC PATH (production)                          │
-    │                                                     │
-    │  POST /solve                                        │
-    │    Frontend sends full instance payload (exams,     │
-    │    rooms, timeslots, instructors) → API hydrates    │
-    │    domain objects → passes to cp_solver → returns   │
-    │    solution. Zero data generation. Zero scaling.    │
-    │    The API is a pure, stateless conduit.            │
-    └─────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────────┐
+    │  GENERIC PATH (production)                              │
+    │                                                         │
+    │  POST /solve                                            │
+    │    Frontend sends full instance payload (exams,         │
+    │    rooms, timeslots, instructors) → API hydrates        │
+    │    domain objects → passes to cp_solver → returns       │
+    │    solution. Zero data generation. Zero scaling.        │
+    │    The API is a pure, stateless conduit.                │
+    └─────────────────────────────────────────────────────────┘
 
-    ┌─────────────────────────────────────────────────────┐
-    │  BENCHMARK PATH (testing only)                      │
-    │                                                     │
-    │  POST /benchmark/parse                              │
-    │  POST /benchmark/solve                              │
-    │    Reads Carter .crs/.stu files, auto-scales        │
-    │    synthetic rooms/timeslots/instructors, and        │
-    │    feeds the generated ProblemInstance to the same   │
-    │    solver. This path exists solely for academic      │
-    │    benchmark testing and will not be used once       │
-    │    real Excel uploads are implemented.               │
-    └─────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────────┐
+    │  UPLOAD PATH (Universal Import)                         │
+    │                                                         │
+    │  POST /upload                                           │
+    │    Accepts .xlsx files in the standard template format, │
+    │    parses using standard_parser.py, and returns the     │
+    │    parsed instance as JSON for the frontend.            │
+    └─────────────────────────────────────────────────────────┘
 
-    Both paths share:
-    - The same SolveResponse schema
-    - The same serialize_instance() output format
-    - The same run_solver() helper that wraps cp_solver.solve()
+    ┌─────────────────────────────────────────────────────────┐
+    │  BENCHMARK PATHS (testing only)                         │
+    │                                                         │
+    │  POST /benchmark/carter/parse | /benchmark/carter/solve │
+    │    Reads Carter .crs/.stu files with synthetic scaling. │
+    │                                                         │
+    │  POST /benchmark/okan/parse | /benchmark/okan/solve     │
+    │    Reads the Okan University dataset from the standard  │
+    │    Excel template (okan_benchmark.xlsx).                │
+    └─────────────────────────────────────────────────────────┘
 
 Start with:
     uvicorn api:app --reload --port 8000
@@ -40,12 +42,15 @@ Start with:
 from __future__ import annotations
 
 import math
+import os
 import time
 import traceback
+import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -62,7 +67,7 @@ from src.models.domain import (
 app = FastAPI(
     title="UETP Solver API",
     description="University Exam Timetabling — CP-SAT solver backend",
-    version="3.0.0",
+    version="4.0.0",
 )
 
 app.add_middleware(
@@ -75,7 +80,7 @@ app.add_middleware(
 
 
 # ══════════════════════════════════════════════════════════════
-#  SHARED SCHEMAS (used by both paths)
+#  SHARED SCHEMAS (used by all paths)
 # ══════════════════════════════════════════════════════════════
 
 class SolverConfig(BaseModel):
@@ -91,7 +96,7 @@ class SolverConfig(BaseModel):
 
 
 class SolveResponse(BaseModel):
-    """Shared response format — identical for both paths."""
+    """Shared response format — identical for all paths."""
     status: str
     message: str
     instance: Optional[dict] = None
@@ -99,12 +104,16 @@ class SolveResponse(BaseModel):
     stats: Optional[dict] = None
 
 
+class ParseResponse(BaseModel):
+    """Response format for parse endpoints."""
+    status: str
+    message: str
+    instance: Optional[dict] = None
+    metadata: Optional[dict] = None
+
+
 # ══════════════════════════════════════════════════════════════
 #  GENERIC PATH — Pydantic schemas that mirror domain.py
-#
-#  These are the frontend's contract. When a user uploads an
-#  Excel file, the frontend parses it into these exact shapes
-#  and POSTs them to /solve. The API trusts this data blindly.
 # ══════════════════════════════════════════════════════════════
 
 class ExamPayload(BaseModel):
@@ -112,8 +121,6 @@ class ExamPayload(BaseModel):
     student_ids: list[int]
     lecturer_id: int
     required_invigilators: int = 1
-
-    # Optional display fields (passed through to response, not used by solver)
     code: Optional[str] = None
     name: Optional[str] = None
 
@@ -122,8 +129,6 @@ class TimeslotPayload(BaseModel):
     id: int
     day: int
     period: int
-
-    # Optional display labels (passed through to response)
     dayLabel: Optional[str] = None
     periodLabel: Optional[str] = None
 
@@ -131,25 +136,18 @@ class TimeslotPayload(BaseModel):
 class RoomPayload(BaseModel):
     id: int
     capacity: int
-
-    # Optional display label
     label: Optional[str] = None
 
 
 class InstructorPayload(BaseModel):
     id: int
     is_phd: bool
-    preferences: dict[int, bool]    # timeslot_id → available?
-
-    # Optional display name
+    preferences: dict[str, bool] = {}
     name: Optional[str] = None
 
 
 class InstancePayload(BaseModel):
-    """
-    Complete problem instance from the frontend.
-    Maps 1:1 to domain.py's ProblemInstance, but as JSON.
-    """
+    """Complete problem instance from the frontend."""
     exams: list[ExamPayload]
     timeslots: list[TimeslotPayload]
     rooms: list[RoomPayload]
@@ -157,29 +155,17 @@ class InstancePayload(BaseModel):
 
 
 class GenericSolveRequest(BaseModel):
-    """
-    The primary /solve endpoint payload.
-    Contains the full instance + solver configuration.
-    """
+    """The primary /solve endpoint payload."""
     instance: InstancePayload
     config: SolverConfig = SolverConfig()
 
 
 # ══════════════════════════════════════════════════════════════
 #  HYDRATION — JSON payloads → domain.py dataclass objects
-#
-#  This is the only translation layer. It converts Pydantic
-#  models into the exact types cp_solver.py expects.
-#  If domain.py's __post_init__ validation fails, the error
-#  propagates as a 422 to the frontend — no silent swallowing.
 # ══════════════════════════════════════════════════════════════
 
 def hydrate_instance(payload: InstancePayload) -> ProblemInstance:
-    """
-    Convert frontend JSON → domain.py dataclass objects.
-    Raises ValueError if domain validation fails (e.g., insufficient
-    room capacity, missing lecturers, etc.)
-    """
+    """Convert frontend JSON → domain.py dataclass objects."""
     exams = [
         Exam(
             id=e.id,
@@ -204,7 +190,7 @@ def hydrate_instance(payload: InstancePayload) -> ProblemInstance:
         Instructor(
             id=i.id,
             is_phd=i.is_phd,
-            preferences=i.preferences,
+            preferences={int(k): v for k, v in i.preferences.items()},
         )
         for i in payload.instructors
     ]
@@ -218,11 +204,7 @@ def hydrate_instance(payload: InstancePayload) -> ProblemInstance:
 
 
 def serialize_from_payload(payload: InstancePayload) -> dict:
-    """
-    Serialize the frontend's own payload into the standard response
-    format, preserving any display labels the frontend provided.
-    Falls back to generated labels for missing fields.
-    """
+    """Serialize the frontend's own payload into the standard response format."""
     _WEEKDAY = ["Monday", "Tuesday", "Wednesday", "Thursday",
                 "Friday", "Saturday", "Sunday"]
     _PSTARTS = ["08:00", "09:30", "11:00", "12:30", "14:00",
@@ -275,8 +257,70 @@ def serialize_from_payload(payload: InstancePayload) -> dict:
                 "id": i.id,
                 "is_phd": i.is_phd,
                 "name": i.name or f"{'Prof.' if i.is_phd else 'RA.'} {i.id}",
+                "preferences": {str(k): v for k, v in i.preferences.items()},
             }
             for i in payload.instructors
+        ],
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  SHARED SERIALIZER FOR STANDARD TEMPLATE INSTANCES
+# ══════════════════════════════════════════════════════════════
+
+def serialize_standard_instance(inst: ProblemInstance, course_codes: Optional[list[str]] = None) -> dict:
+    """Serialize a ProblemInstance from standard_parser (no frontend labels)."""
+    _WD = ["Monday", "Tuesday", "Wednesday", "Thursday",
+           "Friday", "Saturday", "Sunday"]
+    _PS = ["08:00", "09:30", "11:00", "12:30", "14:00",
+           "15:30", "17:00", "18:30", "20:00"]
+    _PE = ["09:30", "11:00", "12:30", "14:00", "15:30",
+           "17:00", "18:30", "20:00", "21:30"]
+
+    days = sorted({ts.day for ts in inst.timeslots})
+    tw = (max(days) // 7 + 1) if days else 1
+    wsuf = tw > 1
+
+    dl = {}
+    for d in days:
+        n = _WD[d % 7]
+        dl[d] = f"{n} W{d // 7 + 1}" if wsuf else n
+
+    pl = {}
+    for p in sorted({ts.period for ts in inst.timeslots}):
+        pl[p] = (f"{_PS[p]} – {_PE[p]}" if p < len(_PS)
+                 else f"Period {p + 1}")
+
+    # Use course codes if provided
+    exam_codes = course_codes if course_codes else [f"E{e.id}" for e in inst.exams]
+
+    return {
+        "exams": [
+            {
+                "id": e.id,
+                "code": exam_codes[i] if i < len(exam_codes) else f"E{e.id}",
+                "name": f"Exam {e.id}",
+                "studentCount": len(e.student_ids),
+                "lecturer_id": e.lecturer_id,
+                "required_invigilators": e.required_invigilators,
+            }
+            for i, e in enumerate(inst.exams)
+        ],
+        "timeslots": [
+            {"id": ts.id, "day": ts.day, "period": ts.period,
+             "dayLabel": dl[ts.day], "periodLabel": pl[ts.period]}
+            for ts in inst.timeslots
+        ],
+        "rooms": [
+            {"id": r.id, "capacity": r.capacity,
+             "label": f"R-{str(r.id + 1).zfill(2)}"}
+            for r in inst.rooms
+        ],
+        "instructors": [
+            {"id": i.id, "is_phd": i.is_phd,
+             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}",
+             "preferences": {str(k): v for k, v in i.preferences.items()}}
+            for i in inst.instructors
         ],
     }
 
@@ -290,10 +334,7 @@ def run_solver(
     serialized: dict,
     config: SolverConfig,
 ) -> SolveResponse:
-    """
-    Shared logic: call cp_solver.solve() and format the response.
-    Used by both the generic and benchmark paths.
-    """
+    """Shared logic: call cp_solver.solve() and format the response."""
     n_exams = len(instance.exams)
 
     print(
@@ -406,21 +447,12 @@ def run_solver(
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "solver": "cp-sat", "version": "3.0.0"}
+    return {"status": "ok", "solver": "cp-sat", "version": "4.0.0"}
 
 
 @app.post("/solve", response_model=SolveResponse)
 def solve_endpoint(req: GenericSolveRequest):
-    """
-    The primary production endpoint.
-
-    Accepts a complete problem instance from the frontend,
-    hydrates it into domain objects, solves, and returns.
-    No file I/O. No synthetic generation. No auto-scaling.
-    The API trusts the data it receives.
-    """
-
-    # ── Hydrate JSON → domain.py objects ─────────────────────
+    """The primary production endpoint."""
     try:
         instance = hydrate_instance(req.instance)
     except (ValueError, TypeError) as e:
@@ -429,40 +461,190 @@ def solve_endpoint(req: GenericSolveRequest):
             detail=f"Instance validation failed: {e}",
         )
 
-    # ── Serialize for the response (preserves frontend labels) ─
     serialized = serialize_from_payload(req.instance)
-
-    # ── Solve ────────────────────────────────────────────────
     return run_solver(instance, serialized, req.config)
 
 
 # ══════════════════════════════════════════════════════════════
-#  BENCHMARK ENDPOINTS  (Carter-specific, testing only)
-#
-#  Everything below this line is isolated from the generic path.
-#  It can be removed entirely when Carter testing is complete
-#  without affecting any production functionality.
+#  UPLOAD ENDPOINT — Universal Excel Import
 # ══════════════════════════════════════════════════════════════
 
-from data.parsers.carter_parser import parse_carter   # noqa: E402
+from data.parsers.standard_parser import parse_standard_template, get_template_metadata
+import pandas as pd
+
+
+@app.post("/upload", response_model=ParseResponse)
+async def upload_template(file: UploadFile = File(...)):
+    """
+    Upload an Excel file in the standard template format.
+    Parses it using standard_parser and returns the instance JSON.
+    """
+    # Validate file extension
+    if not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .xlsx files are accepted. Please upload an Excel file.",
+        )
+
+    # Save to temp file and parse
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        # Extract course codes for labeling
+        enrollments_df = pd.read_excel(tmp_path, sheet_name="Enrollments")
+        course_codes = sorted(enrollments_df["Course_Code"].unique().tolist())
+
+        # Parse the template
+        instance = parse_standard_template(tmp_path)
+        metadata = get_template_metadata(tmp_path)
+
+        # Serialize for frontend
+        serialized = serialize_standard_instance(instance, course_codes)
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Template validation failed: {e}")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to parse template: {e}")
+    finally:
+        # Cleanup temp file
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    return ParseResponse(
+        status="ok",
+        message=(
+            f"Parsed {len(instance.exams)} exams, "
+            f"{len(instance.rooms)} rooms, "
+            f"{len(instance.timeslots)} timeslots, "
+            f"{len(instance.instructors)} instructors."
+        ),
+        instance=serialized,
+        metadata=metadata,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  OKAN BENCHMARK ENDPOINTS
+# ══════════════════════════════════════════════════════════════
+ 
+from data.parsers.okan_parser import parse_okan
+ 
+OKAN_DATA_DIR = Path(__file__).resolve().parent / "data" / "instances" / "anonymusokan"
+OKAN_STUDENT_PATH = OKAN_DATA_DIR / "ANON_Ders_Inceleme_Raporu.xlsx"
+OKAN_SCHEDULE_PATH = OKAN_DATA_DIR / "ANON_Guz_Final.xlsx"
+OKAN_EXAMS_SHEET = "FINAL(8-18 OCAK)"
+ 
+ 
+class OkanSolveRequest(BaseModel):
+    config: SolverConfig = SolverConfig()
+ 
+ 
+def _parse_okan_benchmark() -> tuple[ProblemInstance, list[str]]:
+    """Load and parse the Okan anonymized benchmark via the original okan_parser."""
+    if not OKAN_STUDENT_PATH.exists():
+        raise FileNotFoundError(
+            f"Okan student file not found: {OKAN_STUDENT_PATH}. "
+            f"Place ANON_Ders_Inceleme_Raporu.xlsx in data/instances/anonymusokan/"
+        )
+    if not OKAN_SCHEDULE_PATH.exists():
+        raise FileNotFoundError(
+            f"Okan schedule file not found: {OKAN_SCHEDULE_PATH}. "
+            f"Place ANON_Guz_Final.xlsx in data/instances/anonymusokan/"
+        )
+ 
+    instance = parse_okan(
+        student_excel_path=str(OKAN_STUDENT_PATH),
+        schedule_excel_path=str(OKAN_SCHEDULE_PATH),
+        exams_sheet_name=OKAN_EXAMS_SHEET,
+    )
+ 
+    # Derive course codes directly from the ProblemInstance.
+    # The parser assigns sequential integer IDs; we mirror the
+    # anonymized CRS-xxx naming so labels stay meaningful.
+    course_codes = [f"CRS-{e.id + 1:03d}" for e in instance.exams]
+ 
+    return instance, course_codes
+ 
+ 
+@app.post("/benchmark/okan/parse", response_model=ParseResponse)
+def okan_benchmark_parse():
+    """Parse the Okan University anonymized benchmark dataset."""
+    try:
+        instance, course_codes = _parse_okan_benchmark()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=422, detail=f"Parse failed: {e}")
+ 
+    serialized = serialize_standard_instance(instance, course_codes)
+ 
+    metadata = {
+        "dataset": "Okan Anon Benchmark",
+        "source": "Anonymized Fall Semester — Faculty of Engineering",
+        "num_exams": len(instance.exams),
+        "num_rooms": len(instance.rooms),
+        "num_timeslots": len(instance.timeslots),
+        "num_instructors": len(instance.instructors),
+    }
+ 
+    return ParseResponse(
+        status="ok",
+        message=(
+            f"Parsed Okan benchmark: {len(instance.exams)} exams, "
+            f"{len(instance.rooms)} rooms, "
+            f"{len(instance.timeslots)} timeslots, "
+            f"{len(instance.instructors)} instructors."
+        ),
+        instance=serialized,
+        metadata=metadata,
+    )
+ 
+ 
+@app.post("/benchmark/okan/solve", response_model=SolveResponse)
+def okan_benchmark_solve(req: OkanSolveRequest = OkanSolveRequest()):
+    """Parse and solve the Okan University anonymized benchmark dataset."""
+    try:
+        instance, course_codes = _parse_okan_benchmark()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=422, detail=f"Parse failed: {e}")
+ 
+    serialized = serialize_standard_instance(instance, course_codes)
+    return run_solver(instance, serialized, req.config)
+
+
+# ══════════════════════════════════════════════════════════════
+#  CARTER BENCHMARK ENDPOINTS (preserved from original)
+# ══════════════════════════════════════════════════════════════
+
+from data.parsers.carter_parser import parse_carter
 
 CARTER_DATA_DIR = Path(__file__).resolve().parent / "data" / "instances" / "carter"
 
 
-class BenchmarkConfig(BaseModel):
+class CarterBenchmarkConfig(BaseModel):
     dataset: str = "hec-s-92-2"
     periods_per_day: int = 3
     seed: int = 42
 
 
-class BenchmarkSolveRequest(BaseModel):
+class CarterSolveRequest(BaseModel):
     dataset: str = "hec-s-92-2"
     periods_per_day: int = 3
     seed: int = 42
     config: SolverConfig = SolverConfig()
 
 
-class BenchmarkParseResponse(BaseModel):
+class CarterParseResponse(BaseModel):
     status: str
     message: str
     instance: Optional[dict] = None
@@ -489,28 +671,20 @@ def _count_exams(crs_path: Path) -> int:
 
 
 def _auto_scale(n_exams: int, periods_per_day: int) -> dict:
-    """
-    HARDCODED academic benchmark values for thesis consistency.
-    Ensures that frontend tests use the exact same control variables 
-    (rooms, instructors, timeslots) as the previous backend-only tests.
-    """
-    # Original 'hec-s-92' benchmark values as defined in the README:
+    """Hardcoded academic benchmark values for thesis consistency."""
     n_rooms = 15
     n_instructors = 30
-    n_timeslots = 18  # (6 days x 3 periods)
+    n_timeslots = 18
     n_days = 6
     enable_s3 = True
     time_limit = 120
 
-    # Safety Fallback: If a massive dataset like 'pur-s-93' (2400 exams) is 
-    # selected, it physically cannot fit into the fixed 18x15=270 slots. 
-    # Dynamically scale only for these extreme cases to prevent API crashes:
     if n_exams > (n_timeslots * n_rooms):
         n_rooms = 40
         n_timeslots = math.ceil(n_exams * 1.5 / 40)
         n_days = math.ceil(n_timeslots / periods_per_day)
         n_instructors = 60
-        enable_s3 = False  # Disable S3 (consecutive exams) for massive datasets
+        enable_s3 = False
 
     return {
         "n_exams": n_exams,
@@ -525,7 +699,7 @@ def _auto_scale(n_exams: int, periods_per_day: int) -> dict:
     }
 
 
-def _parse_carter_dataset(cfg: BenchmarkConfig) -> tuple[ProblemInstance, dict]:
+def _parse_carter_dataset(cfg: CarterBenchmarkConfig) -> tuple[ProblemInstance, dict]:
     crs, stu = _resolve_carter(cfg.dataset)
     n_exams = _count_exams(crs)
     scaling = _auto_scale(n_exams, cfg.periods_per_day)
@@ -542,8 +716,8 @@ def _parse_carter_dataset(cfg: BenchmarkConfig) -> tuple[ProblemInstance, dict]:
     return instance, scaling
 
 
-def _serialize_benchmark_instance(inst: ProblemInstance) -> dict:
-    """Serialize a ProblemInstance that came from carter_parser (no frontend labels)."""
+def _serialize_carter_instance(inst: ProblemInstance) -> dict:
+    """Serialize a ProblemInstance from carter_parser."""
     _WD = ["Monday", "Tuesday", "Wednesday", "Thursday",
            "Friday", "Saturday", "Sunday"]
     _PS = ["08:00", "09:30", "11:00", "12:30", "14:00",
@@ -584,15 +758,29 @@ def _serialize_benchmark_instance(inst: ProblemInstance) -> dict:
         ],
         "instructors": [
             {"id": i.id, "is_phd": i.is_phd,
-             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}"}
+             "name": f"{'Prof.' if i.is_phd else 'RA.'} {i.id}",
+             "preferences": {str(k): v for k, v in i.preferences.items()}}
             for i in inst.instructors
         ],
     }
 
 
-@app.post("/benchmark/parse", response_model=BenchmarkParseResponse)
-def benchmark_parse(cfg: BenchmarkConfig = BenchmarkConfig()):
-    """Parse a Carter dataset with auto-scaled synthetic entities."""
+# Legacy endpoint aliases for backward compatibility
+@app.post("/benchmark/parse", response_model=CarterParseResponse)
+def benchmark_parse(cfg: CarterBenchmarkConfig = CarterBenchmarkConfig()):
+    """Parse a Carter dataset (legacy endpoint, use /benchmark/carter/parse)."""
+    return carter_benchmark_parse(cfg)
+
+
+@app.post("/benchmark/solve", response_model=SolveResponse)
+def benchmark_solve(req: CarterSolveRequest = CarterSolveRequest()):
+    """Solve a Carter dataset (legacy endpoint, use /benchmark/carter/solve)."""
+    return carter_benchmark_solve(req)
+
+
+@app.post("/benchmark/carter/parse", response_model=CarterParseResponse)
+def carter_benchmark_parse(cfg: CarterBenchmarkConfig = CarterBenchmarkConfig()):
+    """Parse a Carter benchmark dataset with auto-scaled synthetic entities."""
     try:
         instance, scaling = _parse_carter_dataset(cfg)
     except FileNotFoundError as e:
@@ -601,9 +789,9 @@ def benchmark_parse(cfg: BenchmarkConfig = BenchmarkConfig()):
         traceback.print_exc()
         raise HTTPException(status_code=422, detail=f"Parse failed: {e}")
 
-    serialized = _serialize_benchmark_instance(instance)
+    serialized = _serialize_carter_instance(instance)
 
-    return BenchmarkParseResponse(
+    return CarterParseResponse(
         status="ok",
         message=(
             f"Parsed {len(instance.exams)} exams, "
@@ -616,11 +804,11 @@ def benchmark_parse(cfg: BenchmarkConfig = BenchmarkConfig()):
     )
 
 
-@app.post("/benchmark/solve", response_model=SolveResponse)
-def benchmark_solve(req: BenchmarkSolveRequest = BenchmarkSolveRequest()):
+@app.post("/benchmark/carter/solve", response_model=SolveResponse)
+def carter_benchmark_solve(req: CarterSolveRequest = CarterSolveRequest()):
     """Parse + auto-scale + solve a Carter benchmark dataset."""
     try:
-        bcfg = BenchmarkConfig(
+        bcfg = CarterBenchmarkConfig(
             dataset=req.dataset,
             periods_per_day=req.periods_per_day,
             seed=req.seed,
@@ -632,9 +820,8 @@ def benchmark_solve(req: BenchmarkSolveRequest = BenchmarkSolveRequest()):
         traceback.print_exc()
         raise HTTPException(status_code=422, detail=f"Parse failed: {e}")
 
-    serialized = _serialize_benchmark_instance(instance)
+    serialized = _serialize_carter_instance(instance)
 
-    # Apply auto-scaled solver knobs if not manually set
     effective_config = SolverConfig(
         w1=req.config.w1,
         w2=req.config.w2,
@@ -655,3 +842,24 @@ def benchmark_solve(req: BenchmarkSolveRequest = BenchmarkSolveRequest()):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+
+# ══════════════════════════════════════════════════════════════
+#  TEMPLATE DOWNLOAD ENDPOINT
+# ══════════════════════════════════════════════════════════════
+
+TEMPLATE_PATH = Path(__file__).resolve().parent / "data" / "instances" / "exam_template.xlsx"
+
+
+@app.get("/template/download")
+def download_template():
+    """Serve the blank Excel template as a downloadable attachment."""
+    if not TEMPLATE_PATH.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template file not found on server: {TEMPLATE_PATH.name}",
+        )
+    return FileResponse(
+        path=str(TEMPLATE_PATH),
+        filename="exam_template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )

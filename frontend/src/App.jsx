@@ -34,6 +34,10 @@ import {
   ToggleRight,
   RotateCcw,
   Gauge,
+  Search,
+  UserCheck,
+  ChevronUp,
+  ArrowUpDown,
 } from "lucide-react";
 
 import { exportScheduleToExcel } from "./utils/excelExport";
@@ -220,16 +224,82 @@ function Toast({ toast, onDismiss }) {
 
 /* ── Tabbed Import Modal ───────────────────────────────────── */
 
-function ImportModal({ isOpen, onClose, onLoadBenchmark, isParsing, selectedDataset, onDatasetChange }) {
-  const [activeTab, setActiveTab] = useState("benchmark");
+function ImportModal({
+  isOpen,
+  onClose,
+  onLoadBenchmark,
+  onLoadOkan,
+  onUploadFile,
+  isParsing,
+  selectedDataset,
+  onDatasetChange,
+  activeSource,
+}) {
+  const [activeTab, setActiveTab] = useState("upload");
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const fileInputRef = useRef(null);
 
   if (!isOpen) return null;
 
   const tabs = [
+    { id: "upload",    label: "Import Template", icon: FileSpreadsheet },
+    { id: "okan",      label: "Okan Benchmark",  icon: Database },
     { id: "benchmark", label: "Carter Benchmarks", icon: FlaskConical },
-    { id: "upload",    label: "Upload File",       icon: Upload },
   ];
+
+  const handleFileDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.toLowerCase().endsWith(".xlsx")) {
+      setSelectedFile(file);
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) setSelectedFile(file);
+  };
+
+  const handleUploadSubmit = () => {
+    if (selectedFile) {
+      onUploadFile(selectedFile);
+    }
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/template/download`);
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(
+          response.status === 404
+            ? "Template file not found on the server."
+            : `Server returned ${response.status}: ${errorText}`
+        );
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "exam_template.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      const isNetworkError =
+        err instanceof TypeError && err.message === "Failed to fetch";
+      alert(
+        isNetworkError
+          ? `Could not connect to ${API_BASE_URL}. Make sure the backend is running.`
+          : `Download failed: ${err.message}`
+      );
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -268,11 +338,6 @@ function ImportModal({ isOpen, onClose, onLoadBenchmark, isParsing, selectedData
               >
                 <Icon size={14} />
                 {tab.label}
-                {tab.id === "upload" && (
-                  <span className="px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider bg-slate-100 text-slate-400 rounded-full">
-                    Soon
-                  </span>
-                )}
                 {isActive && (
                   <span className="absolute bottom-0 left-4 right-4 h-[2px] bg-blue-600 rounded-full" />
                 )}
@@ -283,6 +348,149 @@ function ImportModal({ isOpen, onClose, onLoadBenchmark, isParsing, selectedData
 
         {/* ── Tab Content ── */}
         <div className="p-6">
+
+          {/* ── TAB: Import Template (.xlsx Upload) ── */}
+          {activeTab === "upload" && (
+            <>
+              {/* Drag-and-drop zone */}
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleFileDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`
+                  relative flex flex-col items-center justify-center gap-3 p-10 rounded-xl border-2 border-dashed
+                  transition-all duration-200 cursor-pointer
+                  ${isDragging
+                    ? "border-blue-500 bg-blue-50 scale-[1.01]"
+                    : selectedFile
+                      ? "border-emerald-400 bg-emerald-50/50"
+                      : "border-slate-200 bg-slate-50/50 hover:border-slate-300 hover:bg-slate-50"
+                  }
+                `}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${selectedFile ? "bg-emerald-100" : "bg-slate-100"}`}>
+                  <FileSpreadsheet size={26} className={selectedFile ? "text-emerald-600" : "text-slate-400"} />
+                </div>
+                <div className="text-center">
+                  {selectedFile ? (
+                    <>
+                      <p className="text-sm font-semibold text-emerald-700">{selectedFile.name}</p>
+                      <p className="text-xs text-emerald-600/70 mt-1">
+                        {(selectedFile.size / 1024).toFixed(1)} KB · Click to change
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-slate-700">
+                        Drop your <span className="text-blue-600">.xlsx</span> template here
+                      </p>
+                      <p className="text-xs text-slate-400 mt-1">or click to browse — max 10 MB</p>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Download Empty Template */}
+              <div className="mt-3 flex items-center justify-between">
+                <p className="text-[11px] text-slate-400">Need the template format?</p>
+                <button
+                  onClick={handleDownloadTemplate}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors"
+                >
+                  <Download size={12} />
+                  Download Empty Template
+                </button>
+              </div>
+
+              <div className="mt-4 p-3 rounded-lg bg-slate-50 border border-slate-200 mb-5">
+                <div className="flex gap-2">
+                  <Info size={14} className="text-slate-400 mt-0.5 shrink-0" />
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Upload an <strong>.xlsx</strong> file in the standard template format. The backend will parse it via
+                    <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">POST /upload</code>
+                    and return a fully hydrated problem instance.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5">
+                <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
+                  Cancel
+                </button>
+                <button
+                  onClick={handleUploadSubmit}
+                  disabled={!selectedFile || isParsing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isParsing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                  {isParsing ? "Uploading…" : "Upload & Parse"}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* ── TAB: Okan Benchmark ── */}
+          {activeTab === "okan" && (
+            <>
+              {/* KVKK/GDPR Privacy Notice */}
+              <div className="mb-5 p-4 rounded-xl bg-blue-50 border border-blue-200 flex gap-3">
+                <Shield size={18} className="text-blue-600 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold text-blue-800 mb-0.5">Privacy Notice</p>
+                  <p className="text-xs text-blue-700 leading-relaxed">
+                    Okan University dataset. Personal data has been fully anonymized to comply with KVKK/GDPR privacy regulations.
+                  </p>
+                </div>
+              </div>
+
+              {/* Dataset info card */}
+              <div className="p-3.5 rounded-lg bg-violet-50/60 border border-violet-200/60 mb-5">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Database size={14} className="text-violet-600" />
+                  <span className="text-sm font-semibold text-violet-800">Okan University Benchmark</span>
+                </div>
+                <p className="text-xs text-violet-700/80 leading-relaxed">
+                  Real-world exam scheduling data parsed from
+                  <code className="bg-violet-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">okan_benchmark.xlsx</code>
+                  via
+                  <code className="bg-violet-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">POST /benchmark/okan/parse</code>.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 mb-5">
+                <div className="flex gap-2">
+                  <Info size={14} className="text-slate-400 mt-0.5 shrink-0" />
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    The benchmark file must be present at
+                    <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">data/instances/okan_benchmark.xlsx</code>
+                    on the backend. Rooms, timeslots, and instructors are generated with default parameters (6 days × 3 periods).
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2.5">
+                <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
+                  Cancel
+                </button>
+                <button
+                  onClick={onLoadOkan}
+                  disabled={isParsing}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-violet-600 rounded-lg hover:bg-violet-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isParsing ? <Loader2 size={14} className="animate-spin" /> : <Database size={14} />}
+                  {isParsing ? "Parsing…" : "Load Okan Benchmark"}
+                </button>
+              </div>
+            </>
+          )}
 
           {/* ── TAB: Carter Benchmarks ── */}
           {activeTab === "benchmark" && (
@@ -346,67 +554,6 @@ function ImportModal({ isOpen, onClose, onLoadBenchmark, isParsing, selectedData
                 >
                   {isParsing ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
                   {isParsing ? "Parsing…" : "Load Benchmark"}
-                </button>
-              </div>
-            </>
-          )}
-
-          {/* ── TAB: Upload File (Coming Soon) ── */}
-          {activeTab === "upload" && (
-            <>
-              <div className="relative">
-                <div
-                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                  onDragLeave={() => setIsDragging(false)}
-                  onDrop={(e) => { e.preventDefault(); setIsDragging(false); }}
-                  className={`
-                    relative flex flex-col items-center justify-center gap-3 p-10 rounded-xl border-2 border-dashed
-                    transition-all duration-200 opacity-50 pointer-events-none
-                    ${isDragging
-                      ? "border-blue-500 bg-blue-50 scale-[1.01]"
-                      : "border-slate-200 bg-slate-50/50"
-                    }
-                  `}
-                >
-                  <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center">
-                    <FileSpreadsheet size={26} className="text-slate-400" />
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm font-medium text-slate-700">
-                      Drop your <span className="text-blue-600">.xlsx</span> or <span className="text-blue-600">.csv</span> file here
-                    </p>
-                    <p className="text-xs text-slate-400 mt-1">or click to browse — max 10 MB</p>
-                  </div>
-                </div>
-
-                {/* Coming Soon overlay */}
-                <div className="absolute inset-0 flex items-center justify-center rounded-xl">
-                  <div className="px-4 py-2 rounded-lg bg-white/90 border border-slate-200 shadow-sm">
-                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Coming Soon</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 p-3.5 rounded-lg bg-amber-50 border border-amber-200">
-                <div className="flex gap-2">
-                  <Info size={15} className="text-amber-600 mt-0.5 shrink-0" />
-                  <div className="text-xs text-amber-800 leading-relaxed">
-                    <p className="font-medium mb-0.5">Custom file upload is under development.</p>
-                    <p>In the meantime, use the <strong>Carter Benchmarks</strong> tab to load a built-in dataset for testing.</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2.5 mt-6">
-                <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
-                  Cancel
-                </button>
-                <button
-                  disabled
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg shadow-sm opacity-40 cursor-not-allowed"
-                >
-                  <Upload size={14} />
-                  Upload &amp; Parse
                 </button>
               </div>
             </>
@@ -806,6 +953,175 @@ function SolverConfigPanel({ config, onChange, onReset, disabled }) {
 }
 
 
+/* ── Instructor Workload Panel ─────────────────────────────── */
+
+function WorkloadPanel({ solution, instructors }) {
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState("load-desc"); // load-desc, load-asc, name
+  const [expanded, setExpanded] = useState(true);
+
+  // Compute load per instructor from assigned_invigilators
+  const workloadMap = {};
+  for (const inst of instructors) workloadMap[inst.id] = 0;
+  if (solution?.assigned_invigilators) {
+    for (const invIds of Object.values(solution.assigned_invigilators)) {
+      if (Array.isArray(invIds)) {
+        for (const id of invIds) {
+          workloadMap[id] = (workloadMap[id] ?? 0) + 1;
+        }
+      }
+    }
+  }
+
+  const maxLoad = Math.max(1, ...Object.values(workloadMap));
+  const totalAssignments = Object.values(workloadMap).reduce((a, b) => a + b, 0);
+  const activeCount = Object.values(workloadMap).filter((v) => v > 0).length;
+
+  // Build sortable list
+  let rows = instructors.map((inst) => ({
+    id: inst.id,
+    name: inst.name || `Instructor ${inst.id}`,
+    is_phd: inst.is_phd,
+    load: workloadMap[inst.id] ?? 0,
+  }));
+
+  // Filter
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter((r) => r.name.toLowerCase().includes(q) || String(r.id).includes(q));
+  }
+
+  // Sort
+  if (sortBy === "load-desc") rows.sort((a, b) => b.load - a.load);
+  else if (sortBy === "load-asc") rows.sort((a, b) => a.load - b.load);
+  else rows.sort((a, b) => a.name.localeCompare(b.name));
+
+  const barColor = (load) => {
+    const ratio = load / maxLoad;
+    if (ratio >= 0.85) return "bg-red-400";
+    if (ratio >= 0.6)  return "bg-amber-400";
+    return "bg-blue-400";
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      {/* Header — always visible */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50/50 transition-colors"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-violet-600 flex items-center justify-center">
+            <UserCheck size={14} className="text-white" />
+          </div>
+          <div className="text-left">
+            <h3 className="text-sm font-semibold text-slate-800 leading-none">Instructor Workload</h3>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {activeCount}/{instructors.length} assigned · {totalAssignments} total duties
+            </p>
+          </div>
+        </div>
+        <ChevronUp
+          size={16}
+          className={`text-slate-400 transition-transform duration-200 ${expanded ? "" : "rotate-180"}`}
+        />
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-100">
+          {/* Toolbar: search + sort */}
+          <div className="px-4 py-3 flex items-center gap-2.5 border-b border-slate-100 bg-slate-50/40">
+            <div className="relative flex-1 max-w-xs">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search instructor…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full pl-7.5 pr-3 py-1.5 text-xs text-slate-700 bg-white border border-slate-200 rounded-lg placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-300 transition-all"
+                style={{ paddingLeft: "1.75rem" }}
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              {[
+                { id: "load-desc", label: "Highest" },
+                { id: "load-asc",  label: "Lowest" },
+                { id: "name",      label: "A–Z" },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setSortBy(opt.id)}
+                  className={`px-2.5 py-1 text-[10px] font-medium rounded-md transition-all ${
+                    sortBy === opt.id
+                      ? "bg-violet-100 text-violet-700 border border-violet-200"
+                      : "text-slate-400 hover:text-slate-600 hover:bg-slate-100 border border-transparent"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Instructor list — scrollable */}
+          <div className="max-h-[360px] overflow-y-auto">
+            {rows.length === 0 ? (
+              <div className="px-5 py-8 text-center text-xs text-slate-400">
+                No instructors match your search.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {rows.map((inst, idx) => (
+                  <div key={inst.id} className="px-5 py-2.5 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+                    {/* Rank badge */}
+                    <span className="w-6 text-right text-[10px] font-mono text-slate-300 tabular-nums shrink-0">
+                      {idx + 1}
+                    </span>
+
+                    {/* Name + title */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-slate-700 truncate">{inst.name}</p>
+                      <p className="text-[10px] text-slate-400">
+                        {inst.is_phd ? "Research Asst." : "Faculty"} · ID {inst.id}
+                      </p>
+                    </div>
+
+                    {/* Load bar + count */}
+                    <div className="flex items-center gap-2.5 shrink-0 w-36">
+                      <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${barColor(inst.load)}`}
+                          style={{ width: `${maxLoad > 0 ? (inst.load / maxLoad) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-bold text-slate-700 tabular-nums w-6 text-right">
+                        {inst.load}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Footer stats */}
+          <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50/40 flex items-center justify-between text-[10px] text-slate-400">
+            <span>
+              Load range: <span className="font-mono font-medium text-slate-600">{Math.min(...Object.values(workloadMap))}</span>
+              –<span className="font-mono font-medium text-slate-600">{maxLoad}</span>
+              {" "}(gap: <span className="font-mono font-medium text-slate-600">{maxLoad - Math.min(...Object.values(workloadMap))}</span>)
+            </span>
+            <span>
+              Avg: <span className="font-mono font-medium text-slate-600">{instructors.length > 0 ? (totalAssignments / instructors.length).toFixed(1) : 0}</span> duties/instructor
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function ConstraintBadge({ hardViolations, softPenalty }) {
   const isClean = hardViolations === 0;
   return (
@@ -836,6 +1152,12 @@ export default function App() {
 
   // ── Selected dataset — persists across Import and Solve ──
   const [selectedDataset, setSelectedDataset] = useState("hec-s-92-2");
+
+  // ── Active data source: "carter" | "okan" | "upload" ──
+  const [activeSource, setActiveSource] = useState(null);
+
+  // ── Cached uploaded instance payload for generic /solve ──
+  const [uploadedInstancePayload, setUploadedInstancePayload] = useState(null);
 
   // ── Solver configuration — sent as `config` in the API payload ──
   const [solverConfig, setSolverConfig] = useState({ ...DEFAULT_SOLVER_CONFIG });
@@ -871,7 +1193,7 @@ export default function App() {
   }, []);
 
   /* ──────────────────────────────────────────────────────────
-     IMPORT: POST /parse with { dataset } → hydrates problemData
+     IMPORT: POST /benchmark/carter/parse → hydrates problemData
      ────────────────────────────────────────────────────────── */
 
   const handleLoadBenchmark = useCallback(async () => {
@@ -879,7 +1201,7 @@ export default function App() {
     dismissToast();
 
     try {
-      const response = await fetch(`${API_BASE_URL}/benchmark/parse`, {
+      const response = await fetch(`${API_BASE_URL}/benchmark/carter/parse`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dataset: selectedDataset }),
@@ -901,6 +1223,8 @@ export default function App() {
       }
 
       setProblemData(data.instance);
+      setActiveSource("carter");
+      setUploadedInstancePayload(null);
       setSolverResult(null);
       setImportOpen(false);
 
@@ -924,8 +1248,126 @@ export default function App() {
   }, [selectedDataset, dismissToast, showToast]);
 
   /* ──────────────────────────────────────────────────────────
-     SOLVER: POST /solve with { dataset } → instance + solution
-     Uses the same selectedDataset so parse & solve stay in sync.
+     OKAN IMPORT: POST /benchmark/okan/parse → hydrates problemData
+     ────────────────────────────────────────────────────────── */
+
+  const handleLoadOkan = useCallback(async () => {
+    setIsParsing(true);
+    dismissToast();
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/benchmark/okan/parse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(
+          response.status === 404
+            ? `Okan benchmark file not found. Ensure okan_benchmark.xlsx exists in data/instances/.`
+            : `Server returned ${response.status}: ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+
+      if (!data.instance) {
+        throw new Error("Backend returned no instance data.");
+      }
+
+      setProblemData(data.instance);
+      setActiveSource("okan");
+      setUploadedInstancePayload(null);
+      setSolverResult(null);
+      setImportOpen(false);
+
+      const inst = data.instance;
+      showToast(
+        "success",
+        "Loaded Okan Benchmark",
+        `${inst.exams.length} exams, ${inst.rooms.length} rooms, ${inst.timeslots.length} timeslots, ${inst.instructors.length} instructors.`
+      );
+
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError && err.message === "Failed to fetch";
+      if (isNetworkError) {
+        showToast("network", "Server Unreachable", `Could not connect to ${API_BASE_URL}. Make sure the backend is running.`, 10000);
+      } else {
+        showToast("error", "Okan Import Failed", err.message || "An unexpected error occurred.", 10000);
+      }
+    } finally {
+      setIsParsing(false);
+    }
+  }, [dismissToast, showToast]);
+
+  /* ──────────────────────────────────────────────────────────
+     UPLOAD: POST /upload (multipart FormData) → hydrates problemData
+     ────────────────────────────────────────────────────────── */
+
+  const handleUploadFile = useCallback(async (file) => {
+    setIsParsing(true);
+    dismissToast();
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/upload`, {
+        method: "POST",
+        body: formData,
+        // Do NOT set Content-Type — browser sets multipart/form-data with boundary automatically
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "");
+        throw new Error(
+          response.status === 400
+            ? `Invalid file: ${errorText || "Only .xlsx files are accepted."}`
+            : response.status === 422
+              ? `Template validation failed: ${errorText}`
+              : `Server returned ${response.status}: ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+
+      if (!data.instance) {
+        throw new Error("Backend returned no instance data.");
+      }
+
+      // Preserve the raw instance payload for the generic /solve endpoint
+      setProblemData(data.instance);
+      setUploadedInstancePayload(data.instance);
+      setActiveSource("upload");
+      setSolverResult(null);
+      setImportOpen(false);
+
+      const inst = data.instance;
+      showToast(
+        "success",
+        `Parsed ${file.name}`,
+        `${inst.exams.length} exams, ${inst.rooms.length} rooms, ${inst.timeslots.length} timeslots, ${inst.instructors.length} instructors.`
+      );
+
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError && err.message === "Failed to fetch";
+      if (isNetworkError) {
+        showToast("network", "Server Unreachable", `Could not connect to ${API_BASE_URL}. Make sure the backend is running.`, 10000);
+      } else {
+        showToast("error", "Upload Failed", err.message || "An unexpected error occurred.", 10000);
+      }
+    } finally {
+      setIsParsing(false);
+    }
+  }, [dismissToast, showToast]);
+
+  /* ──────────────────────────────────────────────────────────
+     SOLVER — routes to the correct endpoint based on activeSource:
+       "upload"  → POST /solve         (generic, sends full instance)
+       "okan"    → POST /benchmark/okan/solve
+       "carter"  → POST /benchmark/carter/solve
      ────────────────────────────────────────────────────────── */
 
   const runSolver = useCallback(async () => {
@@ -960,14 +1402,67 @@ export default function App() {
     stageRef.current = stageInterval;
 
     try {
-      const response = await fetch(`${API_BASE_URL}/benchmark/solve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          dataset: selectedDataset,
-          config: solverConfig,
-        }),
-      });
+      let response;
+
+      if (activeSource === "upload" && uploadedInstancePayload) {
+        // Generic path: send the full instance payload back to /solve
+        // Build Pydantic-compatible instance from the serialized frontend data
+        const instanceForSolver = {
+          exams: problemData.exams.map((e) => ({
+            id: e.id,
+            student_ids: Array.from({ length: e.studentCount }, (_, i) => i), // placeholder; real ids not preserved in serialized form
+            lecturer_id: e.lecturer_id ?? 0,
+            required_invigilators: e.required_invigilators ?? 1,
+            code: e.code,
+            name: e.name,
+          })),
+          timeslots: problemData.timeslots.map((ts) => ({
+            id: ts.id,
+            day: ts.day,
+            period: ts.period,
+            dayLabel: ts.dayLabel,
+            periodLabel: ts.periodLabel,
+          })),
+          rooms: problemData.rooms.map((r) => ({
+            id: r.id,
+            capacity: r.capacity,
+            label: r.label,
+          })),
+          instructors: problemData.instructors.map((i) => ({
+            id: i.id,
+            is_phd: i.is_phd,
+            preferences: i.preferences ?? {},
+            name: i.name,
+          })),
+        };
+
+        response = await fetch(`${API_BASE_URL}/solve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instance: instanceForSolver,
+            config: solverConfig,
+          }),
+        });
+
+      } else if (activeSource === "okan") {
+        response = await fetch(`${API_BASE_URL}/benchmark/okan/solve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: solverConfig }),
+        });
+
+      } else {
+        // Carter (default)
+        response = await fetch(`${API_BASE_URL}/benchmark/carter/solve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dataset: selectedDataset,
+            config: solverConfig,
+          }),
+        });
+      }
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
@@ -1035,7 +1530,7 @@ export default function App() {
       stageRef.current = null;
       setSolverRunning(false);
     }
-  }, [dataLoaded, selectedDataset, solverConfig, problemData, dismissToast, showToast]);
+  }, [dataLoaded, activeSource, selectedDataset, solverConfig, problemData, uploadedInstancePayload, dismissToast, showToast]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1056,6 +1551,14 @@ export default function App() {
   const assignedCount = hasSolution ? Object.keys(solverResult.solution.exam_time).length : 0;
   const totalExams = dataLoaded ? problemData.exams.length : 0;
 
+  // ── Label for the active dataset badge ──
+  const activeDatasetLabel =
+    activeSource === "okan"
+      ? "Okan Benchmark"
+      : activeSource === "upload"
+        ? "Uploaded File"
+        : selectedDataset;
+
   return (
     <>
       <style>{`
@@ -1074,6 +1577,7 @@ export default function App() {
         .anim-d2 { animation-delay: .12s; }
         .anim-d3 { animation-delay: .18s; }
         .anim-d4 { animation-delay: .24s; }
+        .anim-d5 { animation-delay: .30s; }
         ::-webkit-scrollbar { height: 6px; width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
@@ -1103,7 +1607,7 @@ export default function App() {
                 {dataLoaded && (
                   <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-[11px] font-medium text-slate-500">
                     <FlaskConical size={12} />
-                    {selectedDataset}
+                    {activeDatasetLabel}
                   </div>
                 )}
 
@@ -1125,7 +1629,7 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => exportScheduleToExcel(problemData, solverResult, selectedDataset)}
+                  onClick={() => exportScheduleToExcel(problemData, solverResult, activeDatasetLabel)}
                   disabled={!hasSolution}
                   className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -1216,7 +1720,7 @@ export default function App() {
               </div>
               <h2 className="text-base font-semibold text-slate-600 mb-1">Ready to Solve</h2>
               <p className="text-sm text-slate-400 max-w-md text-center">
-                <strong className="text-slate-600">{selectedDataset}</strong> loaded successfully. Hit <strong className="text-slate-600">Run Solver</strong> to generate an optimized timetable.
+                <strong className="text-slate-600">{activeDatasetLabel}</strong> loaded successfully. Hit <strong className="text-slate-600">Run Solver</strong> to generate an optimized timetable.
               </p>
             </div>
           )}
@@ -1273,6 +1777,14 @@ export default function App() {
                   })}
                 </div>
               </div>
+
+              {/* ── INSTRUCTOR WORKLOAD ── */}
+              <div className="anim-fade-up anim-d5">
+                <WorkloadPanel
+                  solution={solverResult.solution}
+                  instructors={problemData.instructors}
+                />
+              </div>
             </>
           )}
         </main>
@@ -1282,9 +1794,12 @@ export default function App() {
         isOpen={importOpen}
         onClose={() => setImportOpen(false)}
         onLoadBenchmark={handleLoadBenchmark}
+        onLoadOkan={handleLoadOkan}
+        onUploadFile={handleUploadFile}
         isParsing={isParsing}
         selectedDataset={selectedDataset}
         onDatasetChange={setSelectedDataset}
+        activeSource={activeSource}
       />
       {solverRunning && <SolverOverlay elapsedSeconds={elapsedSeconds} stage={solverStage} />}
       <Toast toast={toast} onDismiss={dismissToast} />
