@@ -1184,7 +1184,10 @@ export default function App() {
   const showToast = useCallback((type, title, message, duration = 6000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ type, title, message });
-    toastTimerRef.current = setTimeout(() => setToast(null), duration);
+    
+    if (type !== "error") {
+      toastTimerRef.current = setTimeout(() => setToast(null), duration);
+    }
   }, []);
 
   const dismissToast = useCallback(() => {
