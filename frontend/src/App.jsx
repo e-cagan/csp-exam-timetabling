@@ -488,31 +488,6 @@ function ImportModal({
                 </div>
               </div>
 
-              {/* Dataset info card */}
-              <div className="p-3.5 rounded-lg bg-violet-50/60 border border-violet-200/60 mb-5">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <Database size={14} className="text-violet-600" />
-                  <span className="text-sm font-semibold text-violet-800">Okan University Benchmark</span>
-                </div>
-                <p className="text-xs text-violet-700/80 leading-relaxed">
-                  Real-world exam scheduling data parsed from
-                  <code className="bg-violet-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">okan_benchmark.xlsx</code>
-                  via
-                  <code className="bg-violet-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">POST /benchmark/okan/parse</code>.
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 mb-5">
-                <div className="flex gap-2">
-                  <Info size={14} className="text-slate-400 mt-0.5 shrink-0" />
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    The benchmark file must be present at
-                    <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">data/instances/okan_benchmark.xlsx</code>
-                    on the backend. Rooms, timeslots, and instructors are generated with default parameters (6 days × 3 periods).
-                  </p>
-                </div>
-              </div>
-
               <div className="flex justify-end gap-2.5">
                 <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
                   Cancel
