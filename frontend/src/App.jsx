@@ -38,6 +38,8 @@ import {
   UserCheck,
   ChevronUp,
   ArrowUpDown,
+  Minus,
+  Plus,
 } from "lucide-react";
 
 import { exportScheduleToExcel } from "./utils/excelExport";
@@ -186,6 +188,41 @@ const PASTEL_HUES = [
 
 function examColor(examId) {
   return PASTEL_HUES[examId % PASTEL_HUES.length];
+}
+
+/**
+ * Build a fresh timeslots array from (numDays, periodsPerDay).
+ * Follows the same {id, day, period, dayLabel, periodLabel} schema
+ * that the backend serializer produces.
+ */
+function generateTimeslots(numDays, periodsPerDay) {
+  const _WD = ["Monday", "Tuesday", "Wednesday", "Thursday",
+               "Friday", "Saturday", "Sunday"];
+  const _PS = ["08:00", "09:30", "11:00", "12:30", "14:00",
+               "15:30", "17:00", "18:30", "20:00"];
+  const _PE = ["09:30", "11:00", "12:30", "14:00", "15:30",
+               "17:00", "18:30", "20:00", "21:30"];
+  const totalWeeks = Math.floor((numDays - 1) / 7) + 1;
+  const needsWeekSuffix = totalWeeks > 1;
+
+  const slots = [];
+  let id = 0;
+  for (let d = 0; d < numDays; d++) {
+    const weekdayName = _WD[d % 7];
+    const weekNum = Math.floor(d / 7) + 1;
+    const dayLabel = needsWeekSuffix
+      ? `${weekdayName} W${weekNum}`
+      : weekdayName;
+
+    for (let p = 0; p < periodsPerDay; p++) {
+      const periodLabel = p < _PS.length
+        ? `${_PS[p]} – ${_PE[p]}`
+        : `Period ${p + 1}`;
+      slots.push({ id, day: d, period: p, dayLabel, periodLabel });
+      id++;
+    }
+  }
+  return slots;
 }
 
 
@@ -451,31 +488,6 @@ function ImportModal({
                 </div>
               </div>
 
-              {/* Dataset info card */}
-              <div className="p-3.5 rounded-lg bg-violet-50/60 border border-violet-200/60 mb-5">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <Database size={14} className="text-violet-600" />
-                  <span className="text-sm font-semibold text-violet-800">Okan University Benchmark</span>
-                </div>
-                <p className="text-xs text-violet-700/80 leading-relaxed">
-                  Real-world exam scheduling data parsed from
-                  <code className="bg-violet-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">okan_benchmark.xlsx</code>
-                  via
-                  <code className="bg-violet-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">POST /benchmark/okan/parse</code>.
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 mb-5">
-                <div className="flex gap-2">
-                  <Info size={14} className="text-slate-400 mt-0.5 shrink-0" />
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    The benchmark file must be present at
-                    <code className="bg-slate-200/60 px-1 py-0.5 rounded text-[10px] mx-0.5">data/instances/okan_benchmark.xlsx</code>
-                    on the backend. Rooms, timeslots, and instructors are generated with default parameters (6 days × 3 periods).
-                  </p>
-                </div>
-              </div>
-
               <div className="flex justify-end gap-2.5">
                 <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
                   Cancel
@@ -568,11 +580,12 @@ function ImportModal({
 function SolverOverlay({ elapsedSeconds, stage }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm">
+      {/* BURADAKİ CLASS'LARA flex, flex-col ve items-center EKLENDİ */}
       <div
-        className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center"
+        className="flex flex-col items-center justify-center bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center"
         style={{ animation: "modalIn .3s cubic-bezier(.16,1,.3,1)" }}
       >
-        <div className="relative w-20 h-20 mx-auto mb-5">
+        <div className="relative w-20 h-20 mb-5">
           <svg className="w-20 h-20 indeterminate-spin" viewBox="0 0 80 80">
             <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="5" />
             <circle
@@ -629,6 +642,101 @@ function StatCard({ icon: Icon, label, value, accent }) {
       <div>
         <p className="text-xs text-slate-500 leading-none">{label}</p>
         <p className="text-lg font-bold text-slate-800 leading-tight mt-0.5">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+
+function TimeslotEditorCard({ days, periods, onDaysChange, onPeriodsChange, isModified, disabled }) {
+  const clampDays = (v) => Math.max(1, Math.min(99, v));
+  const clampPeriods = (v) => Math.max(1, Math.min(9, v));
+
+  return (
+    <div className={`flex items-center gap-3 p-3.5 rounded-xl bg-white border shadow-sm transition-colors ${isModified ? "border-amber-300 ring-1 ring-amber-200/50" : "border-slate-200/80"}`}>
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isModified ? "bg-amber-100 text-amber-600" : "bg-amber-50 text-amber-600"}`}>
+        <Clock size={18} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 mb-1">
+          <p className="text-xs text-slate-500 leading-none">Timeslots</p>
+          {isModified && (
+            <span className="px-1 py-px text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-600 rounded">
+              edited
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {/* Days stepper */}
+          <div className="flex items-center">
+            <button
+              onClick={() => onDaysChange(clampDays(days - 1))}
+              disabled={disabled || days <= 1}
+              className="w-5 h-5 flex items-center justify-center rounded-l-md bg-slate-100 border border-slate-200 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <Minus size={10} strokeWidth={2.5} />
+            </button>
+            <input
+              type="number"
+              value={days}
+              min={1}
+              max={99}
+              disabled={disabled}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (!isNaN(v)) onDaysChange(clampDays(v));
+              }}
+              className="w-8 h-5 text-center text-sm font-bold text-slate-800 border-y border-slate-200 bg-white focus:outline-none focus:ring-1 focus:ring-amber-400 disabled:opacity-50 tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <button
+              onClick={() => onDaysChange(clampDays(days + 1))}
+              disabled={disabled || days >= 99}
+              className="w-5 h-5 flex items-center justify-center rounded-r-md bg-slate-100 border border-slate-200 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <Plus size={10} strokeWidth={2.5} />
+            </button>
+          </div>
+
+          <span className="text-xs text-slate-400 font-medium">d</span>
+          <span className="text-sm font-bold text-slate-400">×</span>
+
+          {/* Periods stepper */}
+          <div className="flex items-center">
+            <button
+              onClick={() => onPeriodsChange(clampPeriods(periods - 1))}
+              disabled={disabled || periods <= 1}
+              className="w-5 h-5 flex items-center justify-center rounded-l-md bg-slate-100 border border-slate-200 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <Minus size={10} strokeWidth={2.5} />
+            </button>
+            <input
+              type="number"
+              value={periods}
+              min={1}
+              max={9}
+              disabled={disabled}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (!isNaN(v)) onPeriodsChange(clampPeriods(v));
+              }}
+              className="w-8 h-5 text-center text-sm font-bold text-slate-800 border-y border-slate-200 bg-white focus:outline-none focus:ring-1 focus:ring-amber-400 disabled:opacity-50 tabular-nums [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            <button
+              onClick={() => onPeriodsChange(clampPeriods(periods + 1))}
+              disabled={disabled || periods >= 9}
+              className="w-5 h-5 flex items-center justify-center rounded-r-md bg-slate-100 border border-slate-200 text-slate-500 hover:bg-slate-200 hover:text-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <Plus size={10} strokeWidth={2.5} />
+            </button>
+          </div>
+
+          <span className="text-xs text-slate-400 font-medium">p</span>
+
+          {/* Total slot count */}
+          <span className="ml-1 px-1.5 py-px text-[10px] font-mono font-medium text-slate-400 bg-slate-50 rounded border border-slate-100">
+            ={days * periods}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -910,7 +1018,7 @@ function SolverConfigPanel({ config, onChange, onReset, disabled }) {
                   <input
                     type="range"
                     min={30}
-                    max={600}
+                    max={1200}
                     step={30}
                     value={config.time_limit}
                     disabled={disabled}
@@ -1162,6 +1270,12 @@ export default function App() {
   // ── Solver configuration — sent as `config` in the API payload ──
   const [solverConfig, setSolverConfig] = useState({ ...DEFAULT_SOLVER_CONFIG });
 
+  // ── Editable timeslot dimensions — override what was parsed ──
+  const [editDays, setEditDays] = useState(0);
+  const [editPeriods, setEditPeriods] = useState(0);
+  const [parsedDays, setParsedDays] = useState(0);
+  const [parsedPeriods, setParsedPeriods] = useState(0);
+
   // ── Problem instance: null = nothing loaded yet ──
   const [problemData, setProblemData] = useState(null);
 
@@ -1184,13 +1298,30 @@ export default function App() {
   const showToast = useCallback((type, title, message, duration = 6000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ type, title, message });
-    toastTimerRef.current = setTimeout(() => setToast(null), duration);
+
+    if (type !== "error") {
+      toastTimerRef.current = setTimeout(() => setToast(null), duration);
+    }
   }, []);
 
   const dismissToast = useCallback(() => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(null);
   }, []);
+
+  // ── Sync editable timeslot dims when a new dataset loads ──
+  useEffect(() => {
+    if (problemData?.timeslots) {
+      const days = new Set(problemData.timeslots.map((ts) => ts.day)).size;
+      const periods = new Set(problemData.timeslots.map((ts) => ts.period)).size;
+      setEditDays(days);
+      setEditPeriods(periods);
+      setParsedDays(days);
+      setParsedPeriods(periods);
+    }
+  }, [problemData]);
+
+  const timeslotsModified = editDays !== parsedDays || editPeriods !== parsedPeriods;
 
   /* ──────────────────────────────────────────────────────────
      IMPORT: POST /benchmark/carter/parse → hydrates problemData
@@ -1404,37 +1535,53 @@ export default function App() {
     try {
       let response;
 
-      if (activeSource === "upload" && uploadedInstancePayload) {
-        // Generic path: send the full instance payload back to /solve
-        // Build Pydantic-compatible instance from the serialized frontend data
-        const instanceForSolver = {
+      // Helper: build a full instance payload for the generic /solve path.
+      // Used when timeslots have been edited OR for the upload source.
+      const buildInstancePayload = () => {
+        // Generate timeslots from the user-edited dimensions
+        const newTimeslots = generateTimeslots(editDays, editPeriods);
+        const newTimeslotIds = new Set(newTimeslots.map((ts) => ts.id));
+
+        return {
           exams: problemData.exams.map((e) => ({
             id: e.id,
-            student_ids: Array.from({ length: e.studentCount }, (_, i) => i), // placeholder; real ids not preserved in serialized form
+            student_ids: Array.from({ length: e.studentCount }, (_, i) => i),
             lecturer_id: e.lecturer_id ?? 0,
             required_invigilators: e.required_invigilators ?? 1,
             code: e.code,
             name: e.name,
           })),
-          timeslots: problemData.timeslots.map((ts) => ({
-            id: ts.id,
-            day: ts.day,
-            period: ts.period,
-            dayLabel: ts.dayLabel,
-            periodLabel: ts.periodLabel,
-          })),
+          timeslots: newTimeslots,
           rooms: problemData.rooms.map((r) => ({
             id: r.id,
             capacity: r.capacity,
             label: r.label,
           })),
-          instructors: problemData.instructors.map((i) => ({
-            id: i.id,
-            is_phd: i.is_phd,
-            preferences: i.preferences ?? {},
-            name: i.name,
-          })),
+          instructors: problemData.instructors.map((inst) => {
+            // Rebuild preferences keyed to new timeslot IDs.
+            // Carry over existing preferences where the ID still exists;
+            // default new timeslot IDs to true (no penalty).
+            const oldPrefs = inst.preferences ?? {};
+            const prefs = {};
+            for (const ts of newTimeslots) {
+              const key = String(ts.id);
+              prefs[key] = key in oldPrefs ? oldPrefs[key] : true;
+            }
+            return {
+              id: inst.id,
+              is_phd: inst.is_phd,
+              preferences: prefs,
+              name: inst.name,
+            };
+          }),
         };
+      };
+
+      // When the user has modified timeslot dimensions, ALL sources
+      // are routed through the generic /solve path so the override
+      // takes effect.  Otherwise, keep the original benchmark paths.
+      if (timeslotsModified || (activeSource === "upload" && uploadedInstancePayload)) {
+        const instanceForSolver = buildInstancePayload();
 
         response = await fetch(`${API_BASE_URL}/solve`, {
           method: "POST",
@@ -1530,7 +1677,7 @@ export default function App() {
       stageRef.current = null;
       setSolverRunning(false);
     }
-  }, [dataLoaded, activeSource, selectedDataset, solverConfig, problemData, uploadedInstancePayload, dismissToast, showToast]);
+  }, [dataLoaded, activeSource, selectedDataset, solverConfig, problemData, uploadedInstancePayload, editDays, editPeriods, timeslotsModified, dismissToast, showToast]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1542,12 +1689,8 @@ export default function App() {
   }, []);
 
   // ── Derived display values ──
-  const numDays = dataLoaded
-    ? new Set(problemData.timeslots.map((ts) => ts.day)).size
-    : 0;
-  const periodsPerDay = dataLoaded
-    ? new Set(problemData.timeslots.map((ts) => ts.period)).size
-    : 0;
+  const numDays = dataLoaded ? editDays : 0;
+  const periodsPerDay = dataLoaded ? editPeriods : 0;
   const assignedCount = hasSolution ? Object.keys(solverResult.solution.exam_time).length : 0;
   const totalExams = dataLoaded ? problemData.exams.length : 0;
 
@@ -1648,7 +1791,18 @@ export default function App() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 anim-fade-up">
             <StatCard icon={BookOpen} label="Total Exams"   value={dataLoaded ? totalExams : "—"} accent="blue" />
             <StatCard icon={DoorOpen} label="Rooms"         value={dataLoaded ? problemData.rooms.length : "—"} accent="emerald" />
-            <StatCard icon={Clock}    label="Timeslots"     value={dataLoaded ? `${numDays}d × ${periodsPerDay}p` : "—"} accent="amber" />
+            {dataLoaded ? (
+              <TimeslotEditorCard
+                days={editDays}
+                periods={editPeriods}
+                onDaysChange={setEditDays}
+                onPeriodsChange={setEditPeriods}
+                isModified={timeslotsModified}
+                disabled={solverRunning}
+              />
+            ) : (
+              <StatCard icon={Clock} label="Timeslots" value="—" accent="amber" />
+            )}
             <StatCard icon={Users}    label="Instructors"   value={dataLoaded ? problemData.instructors.length : "—"} accent="violet" />
           </div>
 
