@@ -17,10 +17,15 @@ class Exam:
 
     # Edge case detection
     def __post_init__(self):
-        if self.required_invigilators <= 0:
-            raise ValueError("There must be at least an invigilator to proceed trough examination.")
+        if self.required_invigilators < 0:
+            raise ValueError("There can't be negative invigilators.")
+        
+        # YENİ: Sınav FİZİKSEL ise en az 1 gözetmen şart, ONLINE ise 0 olabilir.
+        if self.required_invigilators == 0 and not self.is_online:
+            raise ValueError("Physical exams must have at least one invigilator to proceed through examination.")
+            
         if len(self.student_ids) <= 0:
-            raise ValueError("There must be at least a student to proceed trough examination.")
+            raise ValueError("There must be at least a student to proceed through examination.")
         if self.lecturer_id < 0:
             raise ValueError("There can't be negative id.")
         

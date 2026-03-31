@@ -30,17 +30,27 @@ def parse_okan(
     room_id_counter = 0
 
     for index, row in df_rooms.iterrows():
+        # Sol sütunları oku (Normal Sınıflar)
         room_name = str(row.iloc[0]).strip()
         capacity = row.iloc[1]
         
-        if pd.isna(room_name) or room_name == 'nan':
-            continue
-        if isinstance(capacity, str):
-            capacity = int(''.join(filter(str.isdigit, capacity)))
+        if not pd.isna(room_name) and room_name != 'nan' and room_name != 'None':
+            if isinstance(capacity, str):
+                capacity = int(''.join(filter(str.isdigit, capacity)))
+            rooms.append(Room(id=room_id_counter, capacity=int(capacity), name=room_name))
+            room_name_to_id[room_name] = room_id_counter
+            room_id_counter += 1
             
-        rooms.append(Room(id=room_id_counter, capacity=int(capacity), name=room_name))
-        room_name_to_id[room_name] = room_id_counter
-        room_id_counter += 1
+        # YENİ: Sağ sütunları oku (Bilgisayar Labları ve Çizim Sınıfları)
+        if len(row) >= 5:
+            lab_name = str(row.iloc[3]).strip()
+            lab_cap = row.iloc[4]
+            if not pd.isna(lab_name) and lab_name != 'nan' and lab_name != 'None':
+                if isinstance(lab_cap, str):
+                    lab_cap = int(''.join(filter(str.isdigit, str(lab_cap))))
+                rooms.append(Room(id=room_id_counter, capacity=int(lab_cap), name=lab_name))
+                room_name_to_id[lab_name] = room_id_counter
+                room_id_counter += 1
 
     VIRTUAL_ROOM_ID = room_id_counter 
     rooms.append(Room(id=VIRTUAL_ROOM_ID, capacity=100000, name="ONLINE"))
@@ -165,13 +175,20 @@ def parse_okan(
 
     exams = []
     exam_id_counter = 0
+    
     for course_code in valid_exam_codes:
         students = exam_students_map.get(course_code, set())
+        
         if len(students) == 0:
             continue 
             
-        req_invig = max(1, len(students) // 40)
         meta = exams_metadata.get(course_code, {"is_online": False, "lecturer_id": 0})
+        
+        # YENİ MANTIK: Online ise 0 gözetmen, fiziksel ise 40 kişiye 1 gözetmen!
+        if meta["is_online"]:
+            req_invig = 0
+        else:
+            req_invig = max(1, len(students) // 40)
         
         exam_obj = Exam(
             id=exam_id_counter,

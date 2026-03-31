@@ -12,7 +12,7 @@ from .domain import ProblemInstance
 class Solution:
 
     exam_time: dict[int, int]                       # X_e mapping (exam_id, timeslot_id)
-    exam_room: dict[int, int]                       # Y_e mapping (exam_id, room_id)
+    exam_room: dict[int, list[int]]                 # Y_e mapping (exam_id, list of room_ids)
     assigned_invigilators: dict[int, set[int]]      # Only assigned (exam_id, instructor_ids)
 
     # Detect edge cases
@@ -59,7 +59,7 @@ class Solution:
 
         # Convert fields to the opposite of to_dict function
         exam_time = {int(exam_id): timeslot_id for exam_id, timeslot_id in data["exam_time"].items()}
-        exam_room = {int(exam_id): room_id for exam_id, room_id in data["exam_room"].items()}
+        exam_room = {int(exam_id): room_list for exam_id, room_list in data["exam_room"].items()}
         assigned_invigilators = {int(exam_id): set(invigilator_list) for exam_id, invigilator_list in data["assigned_invigilators"].items()}
 
         # Return the solution instance with filled fields

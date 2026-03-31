@@ -411,6 +411,8 @@ def run_solver(
         "s2_penalty": s2,
         "s3_penalty": s3,
         "s4_penalty": s4,
+        "total_rooms_used": solver_stats.get("total_rooms_used", 0),
+        "overflow_count": solver_stats.get("overflow_count", 0),
         "max_load": solver_stats.get("max_load"),
         "min_load": solver_stats.get("min_load"),
         "w1": config.w1,
