@@ -138,7 +138,7 @@ def timetable_grid(instance: ProblemInstance, solution: Solution, output_dir: st
     ax.tick_params(which="minor", size=0)
 
     plt.tight_layout()
-    path = os.path.join(output_dir, "timetable_grid.png")
+    path = os.path.join(output_dir, "timetable_grid_s3_disabled.png")
     plt.savefig(path, dpi=150)
     plt.close()
     print(f"  Saved: {path}")
@@ -240,7 +240,7 @@ def workload_chart(
     )
 
     plt.tight_layout()
-    path = os.path.join(output_dir, "workload_chart.png")
+    path = os.path.join(output_dir, "workload_chart_s3_disabled.png")
     plt.savefig(path, dpi=150)
     plt.close()
     print(f"  Saved: {path}")
@@ -313,7 +313,7 @@ def slot_utilization(
     ax.legend(fontsize=10)
 
     plt.tight_layout()
-    path = os.path.join(output_dir, "slot_utilization.png")
+    path = os.path.join(output_dir, "slot_utilization_s3_disabled.png")
     plt.savefig(path, dpi=150)
     plt.close()
     print(f"  Saved: {path}")
@@ -368,7 +368,7 @@ def exam_size_distribution(instance: ProblemInstance, output_dir: str):
     ax.legend(fontsize=10)
 
     plt.tight_layout()
-    path = os.path.join(output_dir, "exam_size_distribution.png")
+    path = os.path.join(output_dir, "exam_size_distribution_s3_disabled.png")
     plt.savefig(path, dpi=150)
     plt.close()
     print(f"  Saved: {path}")

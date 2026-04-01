@@ -19,7 +19,7 @@ if __name__ == '__main__':
     print(f"Loaded Okan Instance: {instance}")
 
     # 2. Solve with multi-room logic
-    solution, stats = solve(instance=instance, enable_s3=False, enable_s4=True, time_limit=300)
+    solution, stats = solve(instance=instance, enable_s3=False, enable_s4=True, time_limit=600)
 
     # 3. Display results
     if solution:
