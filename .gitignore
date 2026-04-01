@@ -29,3 +29,6 @@ Thumbs.db
 
 # --- Private School Data ---
 data/instances/okan/
+
+# --- Experiment Results ---
+experiments/figures/
