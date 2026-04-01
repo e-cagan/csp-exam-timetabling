@@ -128,7 +128,10 @@ function normalizeSolution(rawSolution) {
     exam_time[parseInt(eid, 10)] = typeof tid === "string" ? parseInt(tid, 10) : tid;
   }
   for (const [eid, rid] of Object.entries(rawSolution.exam_room)) {
-    exam_room[parseInt(eid, 10)] = typeof rid === "string" ? parseInt(rid, 10) : rid;
+    // rid is now a list of room IDs (multi-room support)
+    exam_room[parseInt(eid, 10)] = Array.isArray(rid)
+      ? rid.map((r) => (typeof r === "string" ? parseInt(r, 10) : r))
+      : [typeof rid === "string" ? parseInt(rid, 10) : rid]; // legacy fallback
   }
   for (const [eid, ids] of Object.entries(rawSolution.assigned_invigilators)) {
     assigned_invigilators[parseInt(eid, 10)] = Array.isArray(ids)
@@ -743,18 +746,35 @@ function TimeslotEditorCard({ days, periods, onDaysChange, onPeriodsChange, isMo
 }
 
 
-function ExamChip({ exam, instructors, invigilatorIds }) {
+function ExamChip({ exam, instructors, invigilatorIds, roomCount }) {
   const invNames = (invigilatorIds || [])
     .map((id) => instructors.find((i) => i.id === id)?.name ?? `#${id}`)
     .join(", ");
+
+  const isMultiRoom = roomCount > 1;
+
   return (
     <div className={`p-2 rounded-lg border ${examColor(exam.id)} text-left w-full`}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold tracking-wide">{exam.code}</span>
-        <span className="text-[10px] opacity-60">{exam.studentCount} std</span>
+        <div className="flex items-center gap-1">
+          {isMultiRoom && (
+            <span
+              className="text-[9px] font-bold px-1 py-px rounded bg-white/60 border border-current opacity-70"
+              title={`Split across ${roomCount} rooms`}
+            >
+              🚪{roomCount}
+            </span>
+          )}
+          <span className="text-[10px] opacity-60">{exam.studentCount} std</span>
+        </div>
       </div>
       <p className="text-[10px] mt-0.5 opacity-70 truncate">{exam.name}</p>
-      {invNames && <p className="text-[10px] mt-1 opacity-60 truncate" title={invNames}>👁 {invNames}</p>}
+      {invNames && (
+        <p className="text-[10px] mt-1 opacity-60 truncate" title={invNames}>
+          👁 {invNames}
+        </p>
+      )}
     </div>
   );
 }
@@ -765,8 +785,10 @@ function TimetableGrid({ solution, timeslots, rooms, exams, instructors }) {
 
   const cellLookup = {};
   Object.entries(solution.exam_time).forEach(([eid, tid]) => {
-    const rid = solution.exam_room[eid];
-    cellLookup[`${rid}-${tid}`] = Number(eid);
+    const roomIds = solution.exam_room[eid] ?? []; // now always an array
+    roomIds.forEach((rid) => {
+      cellLookup[`${rid}-${tid}`] = Number(eid);
+    });
   });
 
   return (
@@ -836,6 +858,7 @@ function TimetableGrid({ solution, timeslots, rooms, exams, instructors }) {
                           exam={exam}
                           instructors={instructors}
                           invigilatorIds={solution.assigned_invigilators[examId]}
+                          roomCount={(solution.exam_room[examId] ?? []).length}
                         />
                       )}
                     </td>
