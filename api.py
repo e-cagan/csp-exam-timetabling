@@ -41,15 +41,18 @@ Start with:
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import queue
+import threading
 import time
 import traceback
 import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -324,123 +327,241 @@ def serialize_standard_instance(inst: ProblemInstance, course_codes: Optional[li
 
 
 # ══════════════════════════════════════════════════════════════
-#  SHARED SOLVER RUNNER
+#  SHARED SOLVER RUNNER  (Server-Sent Events streaming)
 # ══════════════════════════════════════════════════════════════
+
+def _sse(payload: dict) -> str:
+    """Serialise a dict as a single SSE data line."""
+    return f"data: {json.dumps(payload)}\n\n"
+
+
+def _stream_solver_events(
+    instance: ProblemInstance,
+    serialized: dict,
+    config: SolverConfig,
+):
+    """
+    Generator that yields three SSE events:
+
+      "preparing"      — emitted immediately (model building started).
+      "solver_started" — emitted the instant CP-SAT search begins,
+                         carrying setup_time so the frontend can start
+                         its timer at the true phase boundary.
+      "result"         — final event with the full solution payload.
+    """
+    n_exams     = len(instance.exams)
+    event_queue: queue.Queue = queue.Queue()
+
+    # ── Phase 1 ── tell the frontend the request arrived ─────────────────
+    yield _sse({"event": "preparing"})
+
+    # ── Callback fired by cp_solver when model building finishes ─────────
+    def on_search_start(setup_time: float) -> None:
+        event_queue.put({"event": "solver_started",
+                         "setup_time": round(setup_time, 3)})
+
+    # ── Run the blocking solve in a daemon thread ─────────────────────────
+    def solver_thread() -> None:
+        try:
+            solution, stats = cp_solve(
+                instance=instance,
+                w1=config.w1, w2=config.w2,
+                w3=config.w3, w4=config.w4,
+                enable_s3=config.enable_s3,
+                enable_s4=config.enable_s4,
+                time_limit=config.time_limit,
+                on_search_start=on_search_start,
+            )
+            event_queue.put({"event": "done", "solution": solution,
+                             "stats": stats, "error": None})
+        except Exception as exc:
+            traceback.print_exc()
+            event_queue.put({"event": "done", "solution": None,
+                             "stats": {}, "error": str(exc)})
+
+    threading.Thread(target=solver_thread, daemon=True).start()
+
+    # ── Stream events until "done" ────────────────────────────────────────
+    while True:
+        msg = event_queue.get()
+
+        if msg["event"] == "solver_started":
+            yield _sse(msg)           # Phase 2: frontend timer starts here
+            continue
+
+        # ── msg["event"] == "done" ────────────────────────────────────────
+        solution = msg["solution"]
+        stats    = msg["stats"]
+        error    = msg["error"]
+
+        # ── Crash ─────────────────────────────────────────────────────────
+        if error:
+            yield _sse({
+                "event": "result", "status": "failed",
+                "message": f"Solver crashed: {error}",
+                "instance": serialized,
+                "stats": {"hard_violations": 0, "soft_penalty": 0,
+                          "objective": None, "solve_time": None},
+            })
+            break
+
+        # ── Infeasible ────────────────────────────────────────────────────
+        if solution is None:
+            yield _sse({
+                "event": "result", "status": "infeasible",
+                "message": (
+                    f"No feasible solution found for {n_exams} exams "
+                    f"within {config.time_limit}s. "
+                    f"Allocated {len(instance.timeslots)} timeslots × "
+                    f"{len(instance.rooms)} rooms = "
+                    f"{len(instance.timeslots) * len(instance.rooms)} slots."
+                ),
+                "instance": serialized,
+                "stats": {
+                    "hard_violations": 0, "soft_penalty": 0,
+                    "objective": None,
+                    "setup_time":  stats.get("setup_time"),
+                    "search_time": stats.get("search_time"),
+                    "total_time":  stats.get("total_time"),
+                    "solve_time":  stats.get("search_time"),   # pure search
+                },
+            })
+            break
+
+        # ── Success ───────────────────────────────────────────────────────
+        # Wrap entirely in try/except: if solution.to_dict(), stats computation,
+        # or JSON serialisation raises for any reason the generator still yields
+        # a well-formed "result" event and closes cleanly instead of silently
+        # killing the SSE stream and leaving the frontend hanging.
+        try:
+            solution_dict = solution.to_dict()
+            solution_dict["room_map"] = {
+                str(r.id): getattr(r, "name", "") or f"R-{str(r.id + 1).zfill(2)}"
+                for r in instance.rooms
+            }
+
+            s1 = stats.get("s1_penalty") or 0
+            s2 = stats.get("s2_penalty") or 0
+            s3 = stats.get("s3_penalty") or 0
+            s4 = stats.get("s4_penalty") or 0
+            weighted_soft = config.w1*s1 + config.w2*s2 + config.w3*s3 + config.w4*s4
+
+            placed_count = len(solution_dict.get("exam_time", {}))
+            solver_label = stats.get("status") or "FEASIBLE"
+
+            # search_time = solver.wall_time = "Pure Search Time" on the card.
+            # Matches the frontend timer which started at solver_started event.
+            search_time = stats.get("search_time") or 0
+            setup_time  = stats.get("setup_time")  or 0
+            total_time  = stats.get("total_time")  or 0
+
+            stats_out = {
+                "hard_violations":  0,
+                "soft_penalty":     weighted_soft,
+                "objective":        stats.get("objective"),
+                "solver_status":    solver_label,
+
+                # ── Timing ────────────────────────────────────────────────
+                "solve_time":       search_time,
+                "setup_time":       setup_time,
+                "search_time":      search_time,
+                "total_time":       total_time,
+
+                # ── Raw penalty counts (unweighted) ───────────────────────
+                "s1_penalty":       s1,
+                "s2_penalty":       s2,
+                "s3_penalty":       s3,
+                "s4_penalty":       s4,
+
+                # ── Weighted contributions ─────────────────────────────────
+                "s1_weighted":      stats.get("s1_weighted") or config.w1 * s1,
+                "s2_weighted":      stats.get("s2_weighted") or config.w2 * s2,
+                "s3_weighted":      stats.get("s3_weighted") or config.w3 * s3,
+                "s4_weighted":      stats.get("s4_weighted") or config.w4 * s4,
+
+                # ── S2 fairness detail ─────────────────────────────────────
+                "s2_gap":           stats.get("s2_gap") or s2,
+                "s2_max":           stats.get("s2_max"),
+                "s2_min":           stats.get("s2_min"),
+
+                # ── Room / overflow metrics ────────────────────────────────
+                "physical_rooms_used": (stats.get("physical_rooms_used")
+                                        or stats.get("total_rooms_used") or 0),
+                "total_rooms_used": stats.get("total_rooms_used") or 0,
+                "overflow_count":   stats.get("overflow_count") or 0,
+                "overflow_penalty": stats.get("overflow_penalty") or 0,
+
+                # ── Config echo ───────────────────────────────────────────
+                "w1": config.w1, "w2": config.w2,
+                "w3": config.w3, "w4": config.w4,
+                "enable_s3": config.enable_s3, "enable_s4": config.enable_s4,
+                "time_limit": config.time_limit,
+                "num_exams":        n_exams,
+                "num_rooms":        len(instance.rooms),
+                "num_timeslots":    len(instance.timeslots),
+                "num_instructors":  len(instance.instructors),
+
+                # Legacy aliases
+                "max_load": stats.get("s2_max"),
+                "min_load": stats.get("s2_min"),
+            }
+
+            print(
+                f"[solve] {solver_label} | {placed_count}/{n_exams} exams | "
+                f"obj={stats.get('objective','?')} | "
+                f"S1={s1}(x{config.w1}) S2={s2}(x{config.w2}) "
+                f"S3={s3}(x{config.w3}) S4={s4}(x{config.w4}) | "
+                f"rooms={stats.get('physical_rooms_used', 0)} "
+                f"overflow={stats.get('overflow_count', 0)} | "
+                f"setup={setup_time:.2f}s search={search_time:.2f}s "
+                f"total={total_time:.2f}s"
+            )
+
+            yield _sse({
+                "event":    "result",
+                "status":   solver_label.lower(),
+                "message":  (
+                    f"{solver_label}: placed {placed_count}/{n_exams} exams, "
+                    f"obj={stats.get('objective','?')}, "
+                    f"setup={setup_time:.2f}s + search={search_time:.2f}s."
+                ),
+                "instance": serialized,
+                "solution": solution_dict,
+                "stats":    stats_out,
+            })
+
+        except Exception as stats_exc:
+            # Solver found a solution but serialisation/stats computation failed.
+            # Yield a clean error event so the frontend gets a readable message.
+            traceback.print_exc()
+            yield _sse({
+                "event":   "result",
+                "status":  "failed",
+                "message": f"Solution found but response serialisation failed: {stats_exc}",
+                "instance": serialized,
+                "stats": {
+                    "hard_violations": 0,
+                    "soft_penalty":    0,
+                    "objective":       stats.get("objective"),
+                    "solve_time":      stats.get("search_time"),
+                    "setup_time":      stats.get("setup_time"),
+                    "search_time":     stats.get("search_time"),
+                    "total_time":      stats.get("total_time"),
+                },
+            })
+        break
+
 
 def run_solver(
     instance: ProblemInstance,
     serialized: dict,
     config: SolverConfig,
-) -> SolveResponse:
-    """Shared logic: call cp_solver.solve() and format the response."""
-    n_exams = len(instance.exams)
-
-    print(
-        f"[solve] {n_exams} exams, "
-        f"{len(instance.timeslots)} timeslots, "
-        f"{len(instance.rooms)} rooms, "
-        f"{len(instance.instructors)} instructors | "
-        f"S3={'ON' if config.enable_s3 else 'OFF'}, "
-        f"S4={'ON' if config.enable_s4 else 'OFF'}, "
-        f"time_limit={config.time_limit}s"
-    )
-
-    try:
-        wall_start = time.perf_counter()
-        solution, solver_stats = cp_solve(
-            instance=instance,
-            w1=config.w1,
-            w2=config.w2,
-            w3=config.w3,
-            w4=config.w4,
-            enable_s3=config.enable_s3,
-            enable_s4=config.enable_s4,
-            time_limit=config.time_limit,
-        )
-        wall_elapsed = time.perf_counter() - wall_start
-    except Exception as e:
-        traceback.print_exc()
-        return SolveResponse(
-            status="failed",
-            message=f"Solver crashed: {e}",
-            instance=serialized,
-            stats={
-                "hard_violations": 0, "soft_penalty": 0,
-                "objective": None, "solve_time": None,
-            },
-        )
-
-    # ── Infeasible ───────────────────────────────────────────
-    if solution is None:
-        return SolveResponse(
-            status="infeasible",
-            message=(
-                f"No feasible solution found for {n_exams} exams "
-                f"within {config.time_limit}s. "
-                f"Allocated {len(instance.timeslots)} timeslots × "
-                f"{len(instance.rooms)} rooms = "
-                f"{len(instance.timeslots) * len(instance.rooms)} slots."
-            ),
-            instance=serialized,
-            stats={
-                "hard_violations": 0, "soft_penalty": 0,
-                "objective": None,
-                "solve_time": solver_stats.get("wall_time", wall_elapsed),
-            },
-        )
-
-    # ── Success ──────────────────────────────────────────────
-    solution_dict = solution.to_dict()
-
-    # EKSİK OLAN SATIR: Frontend için oda eşleştirme haritası
-    solution_dict["room_map"] = {str(r.id): getattr(r, "name", "") or f"R-{str(r.id + 1).zfill(2)}" for r in instance.rooms}
-
-    s1 = solver_stats.get("s1_penalty", 0)
-    s2 = solver_stats.get("s2_penalty", 0)
-    s3 = solver_stats.get("s3_penalty", 0)
-    s4 = solver_stats.get("s4_penalty", 0)
-    weighted_soft = config.w1 * s1 + config.w2 * s2 + config.w3 * s3 + config.w4 * s4
-
-    stats_for_frontend = {
-        "hard_violations": 0,
-        "soft_penalty": weighted_soft,
-        "objective": solver_stats.get("objective"),
-        "solve_time": solver_stats.get("wall_time", wall_elapsed),
-        "solver_status": solver_stats.get("status"),
-        "s1_penalty": s1,
-        "s2_penalty": s2,
-        "s3_penalty": s3,
-        "s4_penalty": s4,
-        "total_rooms_used": solver_stats.get("total_rooms_used", 0),
-        "overflow_count": solver_stats.get("overflow_count", 0),
-        "max_load": solver_stats.get("max_load"),
-        "min_load": solver_stats.get("min_load"),
-        "w1": config.w1,
-        "w2": config.w2,
-        "w3": config.w3,
-        "w4": config.w4,
-        "enable_s3": config.enable_s3,
-        "enable_s4": config.enable_s4,
-        "time_limit": config.time_limit,
-        "num_exams": n_exams,
-        "num_rooms": len(instance.rooms),
-        "num_timeslots": len(instance.timeslots),
-        "num_instructors": len(instance.instructors),
-    }
-
-    solver_label = solver_stats.get("status", "FEASIBLE")
-    placed_count = len(solution_dict.get("exam_time", {}))
-
-    return SolveResponse(
-        status=solver_label.lower(),
-        message=(
-            f"{solver_label}: placed {placed_count}/{n_exams} exams "
-            f"with objective {solver_stats.get('objective', '?')} "
-            f"in {solver_stats.get('wall_time', wall_elapsed):.2f}s."
-        ),
-        instance=serialized,
-        solution=solution_dict,
-        stats=stats_for_frontend,
+) -> StreamingResponse:
+    """Entry point for all solve endpoints. Returns an SSE StreamingResponse."""
+    return StreamingResponse(
+        _stream_solver_events(instance, serialized, config),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -453,7 +574,7 @@ def health_check():
     return {"status": "ok", "solver": "cp-sat", "version": "4.0.0"}
 
 
-@app.post("/solve", response_model=SolveResponse)
+@app.post("/solve")
 def solve_endpoint(req: GenericSolveRequest):
     """The primary production endpoint."""
     try:
@@ -600,7 +721,7 @@ def okan_benchmark_parse():
     )
  
  
-@app.post("/benchmark/okan/solve", response_model=SolveResponse)
+@app.post("/benchmark/okan/solve")
 def okan_benchmark_solve(req: OkanSolveRequest = OkanSolveRequest()):
     """Parse and solve the Okan University anonymized benchmark dataset."""
     try:
@@ -765,7 +886,7 @@ def benchmark_parse(cfg: CarterBenchmarkConfig = CarterBenchmarkConfig()):
     return carter_benchmark_parse(cfg)
 
 
-@app.post("/benchmark/solve", response_model=SolveResponse)
+@app.post("/benchmark/solve")
 def benchmark_solve(req: CarterSolveRequest = CarterSolveRequest()):
     """Solve a Carter dataset (legacy endpoint, use /benchmark/carter/solve)."""
     return carter_benchmark_solve(req)
@@ -797,7 +918,7 @@ def carter_benchmark_parse(cfg: CarterBenchmarkConfig = CarterBenchmarkConfig())
     )
 
 
-@app.post("/benchmark/carter/solve", response_model=SolveResponse)
+@app.post("/benchmark/carter/solve")
 def carter_benchmark_solve(req: CarterSolveRequest = CarterSolveRequest()):
     """Parse + auto-scale + solve a Carter benchmark dataset."""
     try:

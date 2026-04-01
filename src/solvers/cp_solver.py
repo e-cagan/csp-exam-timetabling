@@ -48,7 +48,10 @@ Online Exam Handling:
   virtual room in the same timeslot — unlimited concurrency.
 """
 
+import time
 from collections import defaultdict
+from typing import Callable, Optional
+
 from ortools.sat.python import cp_model
 
 from src.utils.conflict_graph import build_conflict_graph
@@ -64,26 +67,35 @@ def solve(
     w4: int = 3,
     enable_s3: bool = True,
     enable_s4: bool = True,
-    time_limit: int = 120
+    time_limit: int = 120,
+    on_search_start: Optional[Callable[[float], None]] = None,
 ) -> tuple[Solution | None, dict]:
     """
     Solves the exam timetabling problem using OR-Tools CP-SAT
     with multi-room splitting and online exam support.
 
     Args:
-        instance: The problem instance containing exams, rooms, timeslots, instructors.
-        w1: Weight for S1 (instructor preference penalty). Range: 0-10.
-        w2: Weight for S2 (workload fairness penalty). Range: 0-10.
-        w3: Weight for S3 (consecutive invigilation penalty). Range: 0-10.
-        w4: Weight for S4 (student consecutive day penalty). Range: 0-10.
-        enable_s3: Whether to include S3 (can be slow for large instances).
-        enable_s4: Whether to include S4 (can be slow for many students).
-        time_limit: Maximum solver time in seconds.
+        instance       : The problem instance (exams, rooms, timeslots, instructors).
+        w1-w4          : Soft-constraint weights (S1-S4). Range 0-10.
+        enable_s3/s4   : Toggle expensive soft constraints for large instances.
+        time_limit     : Maximum wall-clock for the CP-SAT search (seconds).
+        on_search_start: Optional callback fired the instant model building ends
+                         and the CP-SAT engine begins its search. Receives
+                         setup_time (float, seconds). Used by the SSE layer to
+                         emit the "solver_started" event at the true phase boundary.
 
     Returns:
-        A tuple of (Solution or None, stats dict with detailed penalty breakdown).
-        Solution.exam_room is now dict[int, list[int]] (multi-room support).
+        (Solution | None, stats dict)
+        Stats keys: status, objective, s1-s4 penalties, s2 fairness details,
+        physical_rooms_used, overflow_count, overflow_penalty,
+        setup_time, search_time, total_time, wall_time (legacy alias).
     """
+
+    # ── Wall-clock: capture the very first moment of this call ────────────
+    # setup_time  = model building only (H1-H6 constraints + S1-S5 terms)
+    # search_time = solver.wall_time (CP-SAT's own engine measurement)
+    # total_time  = perf_counter end-to-end (setup + search)
+    t_start = time.perf_counter()
 
     model = cp_model.CpModel()
 
@@ -96,10 +108,14 @@ def solve(
 
     # Identify the virtual room (capacity == 100,000) used for online exams.
     # If no virtual room exists (e.g., Carter benchmark with no online exams),
-    # virtual_room_id = -1 and all online-related logic is safely skipped.
+    # virtual_room_id = -1 (sentinel) and has_virtual_room = False.
+    # ALL code that touches the virtual room MUST check has_virtual_room first —
+    # accessing room_used[exam.id][-1] raises KeyError because -1 is never a
+    # real room ID and therefore was never added to the room_used dict.
     virtual_room_id = next(
         (r.id for r in instance.rooms if r.capacity == 100000), -1
     )
+    has_virtual_room = virtual_room_id != -1
 
     # ==================== Decision Variables ====================
     #
@@ -160,64 +176,76 @@ def solve(
                 model.add(exam_times[exam_a] != exam_times[exam_b])
 
     # ==================== H2: Room Capacity (Multi-Room Logic) ====================
-    # For ONLINE exams:
+    # For ONLINE exams (only possible when has_virtual_room is True):
     #   Forced to use ONLY the virtual room. All physical rooms set to 0.
     #   The virtual room has capacity 100,000 — trivially satisfies any exam size.
     #
-    # For PHYSICAL exams:
-    #   The sum of capacities of all selected physical rooms must be >= student count.
-    #   An "overflow" safety valve exists: if no combination of physical rooms
-    #   can fit the exam (shouldn't happen normally), the solver CAN fall back
-    #   to the virtual room — but with a massive penalty (+5000) in the objective
-    #   to ensure this only happens as a last resort.
+    # For PHYSICAL exams WITH a virtual room (has_virtual_room=True):
+    #   Overflow safety valve: if no physical combination fits, the solver may
+    #   fall back to the virtual room at a +5000 penalty cost (last resort).
+    #   is_overflow = room_used[exam_id][virtual_room_id] acts as the flag.
     #
-    #   The overflow mechanism uses the virtual room's boolean as a flag:
-    #     is_overflow = room_used[exam_id][virtual_room_id]
-    #     If is_overflow=0: physical rooms must sum to >= students (normal case)
-    #     If is_overflow=1: all physical rooms forced to 0 (emergency online fallback)
-    #
-    #   This reification pattern (only_enforce_if) lets the solver choose
-    #   between "find enough physical rooms" and "give up and go online",
-    #   with the 5000-point penalty making the latter extremely unattractive.
+    # For PHYSICAL exams WITHOUT a virtual room (has_virtual_room=False):
+    #   Simple capacity constraint — selected physical rooms must sum to >= students.
+    #   No overflow mechanism exists (Carter benchmarks, pure physical datasets).
+    #   Crucially: we NEVER access room_used[exam.id][virtual_room_id] here
+    #   because virtual_room_id == -1 and -1 is not a key in room_used.
 
     overflow_penalties = []
 
     for exam in instance.exams:
         if exam.is_online:
-            # Online exam: force to virtual room, block all physical rooms.
-            model.add(room_used[exam.id][virtual_room_id] == 1)
-            for r in instance.rooms:
-                if r.id != virtual_room_id:
-                    model.add(room_used[exam.id][r.id] == 0)
+            if not has_virtual_room:
+                # Defensive: treat as physical if no virtual room was provisioned.
+                # This shouldn't occur in well-formed instances but prevents a crash.
+                model.add(
+                    sum(room_used[exam.id][r.id] * r.capacity for r in instance.rooms)
+                    >= len(exam.student_ids)
+                )
+            else:
+                # Standard online path: lock to virtual room, block all physical rooms.
+                model.add(room_used[exam.id][virtual_room_id] == 1)
+                for r in instance.rooms:
+                    if r.id != virtual_room_id:
+                        model.add(room_used[exam.id][r.id] == 0)
+
         else:
-            # Physical exam: multi-room capacity constraint with overflow safety valve.
+            # Physical exam path
+            if not has_virtual_room:
+                # ── No virtual room (Carter / pure-physical datasets) ──────────
+                # Simple capacity constraint: pick enough rooms to seat all students.
+                # No overflow valve — if rooms are genuinely insufficient the
+                # problem is infeasible, which the solver will report cleanly.
+                model.add(
+                    sum(room_used[exam.id][r.id] * r.capacity for r in instance.rooms)
+                    >= len(exam.student_ids)
+                )
+            else:
+                # ── Virtual room present — full overflow safety valve ──────────
+                # The overflow flag re-uses the virtual room's boolean for this exam.
+                # If it becomes 1, the exam is "forced online" (emergency fallback).
+                is_overflow = room_used[exam.id][virtual_room_id]
+                overflow_penalties.append(is_overflow)
 
-            # The overflow flag is the virtual room's boolean for this exam.
-            # If it becomes 1, the exam is "forced online" (emergency fallback).
-            is_overflow = room_used[exam.id][virtual_room_id]
-            overflow_penalties.append(is_overflow)
+                # NORMAL CASE (is_overflow=0): physical rooms must seat all students.
+                model.add(
+                    sum(
+                        room_used[exam.id][r.id] * r.capacity
+                        for r in instance.rooms
+                        if r.id != virtual_room_id
+                    ) >= len(exam.student_ids)
+                ).only_enforce_if(is_overflow.negated())
 
-            # NORMAL CASE (no overflow): selected physical rooms must have enough
-            # total capacity. sum(room_used[eid][rid] * capacity(rid)) >= students.
-            # This allows the solver to pick ANY combination of rooms that fits.
-            model.add(
-                sum(
-                    room_used[exam.id][r.id] * r.capacity
-                    for r in instance.rooms
-                    if r.id != virtual_room_id
-                ) >= len(exam.student_ids)
-            ).only_enforce_if(is_overflow.negated())
-
-            # OVERFLOW CASE: if forced online, ban all physical room usage.
-            # This ensures clean separation — no "half physical, half online" state.
-            for r in instance.rooms:
-                if r.id != virtual_room_id:
-                    model.add(
-                        room_used[exam.id][r.id] == 0
-                    ).only_enforce_if(is_overflow)
+                # OVERFLOW CASE (is_overflow=1): ban all physical room usage so the
+                # exam runs entirely online, with no hybrid physical+online state.
+                for r in instance.rooms:
+                    if r.id != virtual_room_id:
+                        model.add(
+                            room_used[exam.id][r.id] == 0
+                        ).only_enforce_if(is_overflow)
 
     # ==================== H6: Minimum Invigilators Per Exam ====================
-    # Σ_i Z_{e,i} == required(e)
+    # Σ_i Z_{e,i} == effective_required(e)
     #
     # Using == (equality) instead of >= (inequality) because:
     #   - It's tighter — the solver doesn't waste time exploring extra assignments
@@ -225,13 +253,22 @@ def solve(
     #   - required_invigilators is already calibrated (1 per 40 students)
     #
     # For ONLINE exams: required_invigilators == 0, so no instructor is assigned.
-    # This is correct — online proctoring is handled separately.
-    # For PHYSICAL exams: required_invigilators >= 1 (enforced by domain.py).
+    # For PHYSICAL exams: required_invigilators >= 1 (set by domain.py / parser).
+    #
+    # SAFETY CLAMP — prevents infeasibility when:
+    #   a) The Okan benchmark's required count exceeds the instructor pool
+    #      (e.g., a large exam needs 5 invigilators but only 3 are available).
+    #   b) The user edits timeslot dimensions and a regenerated instance has
+    #      fewer instructors than the original benchmark assumed.
+    # We clamp to min(required, n_instructors) so the constraint is always
+    # satisfiable. The soft S2 workload-fairness term still penalises imbalance.
 
+    n_instructors = len(instance.instructors)
     for exam in instance.exams:
+        effective_required = min(exam.required_invigilators, n_instructors)
         model.add(
             sum(invigilator[exam.id][inst.id] for inst in instance.instructors)
-            == exam.required_invigilators
+            == effective_required
         )
 
     # ==================== H3, H4, H5: Pairwise Exam Constraints ====================
@@ -613,7 +650,21 @@ def solve(
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
 
+    # ── Phase boundary: model building is complete ─────────────────────────
+    # Fire the callback NOW so the SSE layer can push "solver_started" to the
+    # frontend before handing off to CP-SAT.  The frontend timer starts here.
+    t_search_start = time.perf_counter()
+    setup_time = t_search_start - t_start
+    if on_search_start is not None:
+        on_search_start(setup_time)
+
     status = solver.solve(model)
+
+    # ── Total end-to-end duration (perf_counter, not solver.wall_time) ─────
+    total_time  = time.perf_counter() - t_start
+    # solver.wall_time is CP-SAT's own internal measurement of the search phase.
+    # It is the "pure search time" displayed on the Solve Time card.
+    search_time = solver.wall_time
 
     # ==================== Extract Solution ====================
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -651,25 +702,67 @@ def solve(
         # Provides a detailed decomposition of the objective value.
         # This is critical for paper/analysis: reviewers need to see
         # exactly how much each component contributes to the total.
+        # ── Raw penalty counts ─────────────────────────────────────────────
+        s1_raw  = sum(solver.value(v) for v in s1_cost)
+        s2_raw  = solver.value(s2_cost)          # = max_load - min_load (gap)
+        s3_raw  = sum(solver.value(v) for v in s3_cost) if s3_cost else 0
+        s4_raw  = sum(solver.value(v) for v in s4_cost) if s4_cost else 0
+        max_l   = solver.value(max_load)
+        min_l   = solver.value(min_load)
+
+        phys_rooms_used = solver.value(total_rooms_used)
+        over_count      = sum(solver.value(v) for v in overflow_penalties)
+        over_penalty    = over_count * 5000       # matches the objective formula
+
         stats = {
-            "status": "OPTIMAL" if status == cp_model.OPTIMAL else "FEASIBLE",
+            "status":   "OPTIMAL" if status == cp_model.OPTIMAL else "FEASIBLE",
             "objective": solver.objective_value,
-            # Individual soft constraint penalties
-            "s1_penalty": sum(solver.value(v) for v in s1_cost),
-            "s2_penalty": solver.value(s2_cost),
-            "s3_penalty": sum(solver.value(v) for v in s3_cost) if s3_cost else 0,
-            "s4_penalty": sum(solver.value(v) for v in s4_cost) if s4_cost else 0,
-            # Multi-room specific metrics
-            "total_rooms_used": solver.value(total_rooms_used),
-            "overflow_count": sum(solver.value(v) for v in overflow_penalties),
-            # Solver performance
-            "wall_time": solver.wall_time,
-            # Fairness details
-            "max_load": solver.value(max_load),
-            "min_load": solver.value(min_load),
+
+            # ── Individual raw penalty counts (unweighted) ─────────────────
+            "s1_penalty": s1_raw,
+            "s2_penalty": s2_raw,          # workload gap (max - min)
+            "s3_penalty": s3_raw,
+            "s4_penalty": s4_raw,
+
+            # ── Weighted contributions to the objective ────────────────────
+            "s1_weighted": w1 * s1_raw,
+            "s2_weighted": w2 * s2_raw,
+            "s3_weighted": w3 * s3_raw,
+            "s4_weighted": w4 * s4_raw,
+
+            # ── S2 fairness detail ─────────────────────────────────────────
+            "s2_gap": s2_raw,              # alias for clarity in frontend
+            "s2_max": max_l,
+            "s2_min": min_l,
+
+            # ── Room / overflow metrics ────────────────────────────────────
+            "physical_rooms_used": phys_rooms_used,
+            "total_rooms_used":    phys_rooms_used,   # legacy alias
+            "overflow_count":      over_count,
+            "overflow_penalty":    over_penalty,
+
+            # ── Phase timings (all seconds, perf_counter unless noted) ─────
+            # setup_time  : H1-H6 + S1-S5 model building
+            # search_time : solver.wall_time (CP-SAT internal — pure search)
+            # total_time  : setup + search (perf_counter end-to-end)
+            # wall_time   : legacy alias for search_time
+            "setup_time":  round(setup_time, 4),
+            "search_time": round(search_time, 4),
+            "total_time":  round(total_time, 4),
+            "wall_time":   round(search_time, 4),
+
+            # ── Legacy individual keys kept for backward compat ────────────
+            "max_load": max_l,
+            "min_load": min_l,
         }
 
         return solution, stats
 
     # No feasible solution found within the time limit.
-    return None, {"status": "INFEASIBLE", "wall_time": solver.wall_time}
+    return None, {
+        "status":      "INFEASIBLE",
+        "setup_time":  round(setup_time, 4),
+        "search_time": round(search_time, 4),
+        "total_time":  round(total_time, 4),
+        "wall_time":   round(search_time, 4),
+    }

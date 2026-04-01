@@ -70,9 +70,9 @@ const DEFAULT_SOLVER_CONFIG = {
   w2: 5,
   w3: 2,
   w4: 3,
-  enable_s3: true,
+  enable_s3: false,
   enable_s4: true,
-  time_limit: 120,
+  time_limit: 360,
 };
 
 const CONSTRAINT_DEFS = [
@@ -580,10 +580,10 @@ function ImportModal({
 }
 
 
-function SolverOverlay({ elapsedSeconds, stage }) {
+function SolverOverlay({ elapsedSeconds, stage, phase }) {
+  const isPreparing = phase === "preparing";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm">
-      {/* BURADAKİ CLASS'LARA flex, flex-col ve items-center EKLENDİ */}
       <div
         className="flex flex-col items-center justify-center bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center"
         style={{ animation: "modalIn .3s cubic-bezier(.16,1,.3,1)" }}
@@ -593,10 +593,15 @@ function SolverOverlay({ elapsedSeconds, stage }) {
             <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" strokeWidth="5" />
             <circle
               cx="40" cy="40" r="34" fill="none"
-              stroke="url(#solverGrad)" strokeWidth="5" strokeLinecap="round"
+              stroke={isPreparing ? "url(#prepGrad)" : "url(#solverGrad)"}
+              strokeWidth="5" strokeLinecap="round"
               strokeDasharray={`${Math.PI * 34 * 0.75} ${Math.PI * 34 * 1.25}`}
             />
             <defs>
+              <linearGradient id="prepGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#d97706" />
+                <stop offset="100%" stopColor="#f59e0b" />
+              </linearGradient>
               <linearGradient id="solverGrad" x1="0%" y1="0%" x2="100%" y2="0%">
                 <stop offset="0%" stopColor="#2563eb" />
                 <stop offset="100%" stopColor="#818cf8" />
@@ -604,19 +609,34 @@ function SolverOverlay({ elapsedSeconds, stage }) {
             </defs>
           </svg>
           <div className="absolute inset-0 flex items-center justify-center">
-            <Zap size={22} className="text-blue-600" />
+            {isPreparing
+              ? <Settings size={22} className="text-amber-500" style={{ animation: "indeterminateSpin 3s linear infinite" }} />
+              : <Zap size={22} className="text-blue-600" />}
           </div>
         </div>
 
-        <h3 className="text-base font-semibold text-slate-900 mb-1">Running CSP Solver</h3>
-        <p className="text-sm text-slate-500 mb-1.5">{stage}</p>
-        <p className="text-xs text-slate-400 font-mono tabular-nums">{elapsedSeconds}s elapsed</p>
+        {isPreparing ? (
+          <>
+            <h3 className="text-base font-semibold text-slate-900 mb-1">Building Constraint Model</h3>
+            <p className="text-sm text-slate-500 mb-3">Setting up H1–H6 constraints…</p>
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-medium text-amber-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" style={{ animation: "pulse 1s ease-in-out infinite" }} />
+              Timer starts when search begins
+            </span>
+          </>
+        ) : (
+          <>
+            <h3 className="text-base font-semibold text-slate-900 mb-1">Running CP-SAT Search</h3>
+            <p className="text-sm text-slate-500 mb-1.5">{stage}</p>
+            <p className="text-xs text-slate-400 font-mono tabular-nums">{elapsedSeconds}s elapsed</p>
+          </>
+        )}
 
         <div className="flex items-center justify-center gap-1.5 mt-4">
           {[0, 1, 2].map((i) => (
             <span
               key={i}
-              className="w-1.5 h-1.5 rounded-full bg-blue-500"
+              className={`w-1.5 h-1.5 rounded-full ${isPreparing ? "bg-amber-400" : "bg-blue-500"}`}
               style={{ animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite` }}
             />
           ))}
@@ -627,7 +647,7 @@ function SolverOverlay({ elapsedSeconds, stage }) {
 }
 
 
-function StatCard({ icon: Icon, label, value, accent }) {
+function StatCard({ icon: Icon, label, value, accent, subtitle, badge }) {
   const accents = {
     blue:    "bg-blue-50 text-blue-600",
     emerald: "bg-emerald-50 text-emerald-600",
@@ -636,15 +656,25 @@ function StatCard({ icon: Icon, label, value, accent }) {
     rose:    "bg-rose-50 text-rose-600",
     cyan:    "bg-cyan-50 text-cyan-600",
     slate:   "bg-slate-100 text-slate-600",
+    orange:  "bg-orange-50 text-orange-600",
+    teal:    "bg-teal-50 text-teal-600",
   };
   return (
     <div className="flex items-center gap-3 p-3.5 rounded-xl bg-white border border-slate-200/80 shadow-sm">
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${accents[accent] || accents.slate}`}>
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${accents[accent] || accents.slate}`}>
         <Icon size={18} />
       </div>
-      <div>
-        <p className="text-xs text-slate-500 leading-none">{label}</p>
-        <p className="text-lg font-bold text-slate-800 leading-tight mt-0.5">{value}</p>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs text-slate-500 leading-none">{label}</p>
+          {badge && (
+            <span className="px-1 py-px text-[9px] font-bold rounded bg-slate-100 text-slate-500 leading-none">
+              {badge}
+            </span>
+          )}
+        </div>
+        <p className="text-lg font-bold text-slate-800 leading-tight mt-0.5 truncate">{value}</p>
+        {subtitle && <p className="text-[10px] text-slate-400 leading-none mt-0.5">{subtitle}</p>}
       </div>
     </div>
   );
@@ -1063,6 +1093,14 @@ function SolverConfigPanel({ config, onChange, onReset, disabled }) {
             </p>
           </div>
 
+          {/* ── Info tip ── */}
+          <div className="flex items-start gap-2.5 px-3.5 py-3 rounded-lg bg-sky-50 border border-sky-200">
+            <Info size={14} className="text-sky-500 mt-0.5 shrink-0" />
+            <p className="text-[11px] text-sky-800 leading-relaxed">
+              To get better results, you can increase the time limit, adjust the weights of soft constraints, and modify the time slots.
+            </p>
+          </div>
+
           {/* ── Footer actions ── */}
           <div className="flex items-center justify-between pt-1">
             <button
@@ -1273,6 +1311,174 @@ function ConstraintBadge({ hardViolations, softPenalty }) {
 }
 
 
+/* ── Optimization Statistics Panel ────────────────────────── */
+
+function OptimizationStatsPanel({ result }) {
+  const [expanded, setExpanded] = useState(true);
+  if (!result) return null;
+
+  const {
+    objective, solverStatus,
+    s1Penalty, s1Weighted,
+    s2Gap, s2Max, s2Min, s2Weighted,
+    s3Penalty, s3Weighted,
+    s4Penalty, s4Weighted,
+    physicalRoomsUsed, overflowCount, overflowPenalty,
+    setupTime, searchTime, totalTime,
+    weights = {},
+  } = result;
+
+  const isOptimal = solverStatus === "OPTIMAL";
+
+  const fmt = (v) => (v == null ? "—" : typeof v === "number" ? v.toLocaleString() : v);
+  const fmtTime = (v) => (v == null ? "—" : `${Number(v).toFixed(2)}s`);
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-slate-50/50 transition-colors"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-cyan-600 flex items-center justify-center">
+            <BarChart3 size={14} className="text-white" />
+          </div>
+          <div className="text-left">
+            <h3 className="text-sm font-semibold text-slate-800 leading-none">Optimization Statistics</h3>
+            <p className="text-[10px] text-slate-400 mt-0.5">Full penalty decomposition · phase timings</p>
+          </div>
+          <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded-full ${
+            isOptimal ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
+          }`}>
+            {isOptimal ? "OPTIMAL" : "FEASIBLE"}
+          </span>
+        </div>
+        <ChevronDown size={16} className={`text-slate-400 transition-transform duration-200 ${expanded ? "rotate-180" : ""}`} />
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-100 p-5 space-y-5">
+
+          {/* ── Row 1: Objective hero ──────────────────────────────────── */}
+          <div className={`flex items-center gap-4 px-5 py-4 rounded-xl border ${
+            isOptimal ? "bg-emerald-50 border-emerald-200" : "bg-cyan-50 border-cyan-200"
+          }`}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+              isOptimal ? "bg-emerald-100" : "bg-cyan-100"
+            }`}>
+              <Target size={20} className={isOptimal ? "text-emerald-600" : "text-cyan-600"} />
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 mb-0.5">Objective Value</p>
+              <p className={`text-2xl font-bold tabular-nums ${isOptimal ? "text-emerald-800" : "text-cyan-800"}`}>
+                {fmt(objective)}
+              </p>
+            </div>
+          </div>
+
+          {/* ── Row 2: S1–S4 grid ─────────────────────────────────────── */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
+              Soft Constraint Penalties
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard
+                icon={UserCheck}
+                label="Instructor Preferences"
+                value={fmt(s1Penalty)}
+                accent="blue"
+                badge={`S1 ×${weights.w1 ?? "?"}`}
+                subtitle={s1Weighted != null ? `Weighted: ${fmt(s1Weighted)}` : undefined}
+              />
+              <StatCard
+                icon={ArrowUpDown}
+                label="Workload Fairness"
+                value={fmt(s2Gap)}
+                accent="violet"
+                badge={`S2 ×${weights.w2 ?? "?"}`}
+                subtitle={s2Max != null ? `max ${s2Max} / min ${s2Min}` : undefined}
+              />
+              <StatCard
+                icon={Clock}
+                label="Consecutive Duties"
+                value={fmt(s3Penalty)}
+                accent="amber"
+                badge={`S3 ×${weights.w3 ?? "?"}`}
+                subtitle={s3Weighted != null ? `Weighted: ${fmt(s3Weighted)}` : undefined}
+              />
+              <StatCard
+                icon={CalendarDays}
+                label="Student Day Gap"
+                value={fmt(s4Penalty)}
+                accent="emerald"
+                badge={`S4 ×${weights.w4 ?? "?"}`}
+                subtitle={s4Weighted != null ? `Weighted: ${fmt(s4Weighted)}` : undefined}
+              />
+            </div>
+          </div>
+
+          {/* ── Row 3: Room + overflow ────────────────────────────────── */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
+              Room Utilisation
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <StatCard
+                icon={DoorOpen}
+                label="Physical Rooms Used"
+                value={fmt(physicalRoomsUsed)}
+                accent="teal"
+                subtitle="Total physical room assignments (anti-fragmentation cost)"
+              />
+              <StatCard
+                icon={WifiOff}
+                label="Overflow / Online Penalty"
+                value={fmt(overflowPenalty)}
+                accent={overflowCount > 0 ? "rose" : "slate"}
+                subtitle={overflowCount != null
+                  ? `${overflowCount} exam${overflowCount !== 1 ? "s" : ""} forced online (×5000)`
+                  : undefined}
+              />
+            </div>
+          </div>
+
+          {/* ── Row 4: Phase timing breakdown ─────────────────────────── */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
+              Timing Breakdown
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <StatCard
+                icon={Settings}
+                label="Model Build"
+                value={fmtTime(setupTime)}
+                accent="slate"
+                subtitle="H1-H6 + S1-S5 setup"
+              />
+              <StatCard
+                icon={Zap}
+                label="Pure Search"
+                value={fmtTime(searchTime)}
+                accent="violet"
+                subtitle="CP-SAT engine (solver.wall_time)"
+              />
+              <StatCard
+                icon={Timer}
+                label="Total Wall-Clock"
+                value={fmtTime(totalTime)}
+                accent="slate"
+                subtitle="Setup + search"
+              />
+            </div>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 /* ────────────────────────────────────────────────────────────
    MAIN APP
    ──────────────────────────────────────────────────────────── */
@@ -1294,8 +1500,8 @@ export default function App() {
   const [solverConfig, setSolverConfig] = useState({ ...DEFAULT_SOLVER_CONFIG });
 
   // ── Editable timeslot dimensions — override what was parsed ──
-  const [editDays, setEditDays] = useState(0);
-  const [editPeriods, setEditPeriods] = useState(0);
+  const [editDays, setEditDays] = useState(14);
+  const [editPeriods, setEditPeriods] = useState(6);
   const [parsedDays, setParsedDays] = useState(0);
   const [parsedPeriods, setParsedPeriods] = useState(0);
 
@@ -1304,6 +1510,7 @@ export default function App() {
 
   // ── Solver state ──
   const [solverRunning, setSolverRunning] = useState(false);
+  const [solverPhase, setSolverPhase] = useState("preparing"); // "preparing" | "solving"
   const [solverStage, setSolverStage] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [solverResult, setSolverResult] = useState(null);
@@ -1528,111 +1735,77 @@ export default function App() {
     if (!dataLoaded) return;
 
     setSolverRunning(true);
+    setSolverPhase("preparing");
     setSolverResult(null);
     setElapsedSeconds(0);
     dismissToast();
 
-    const tickInterval = setInterval(() => {
-      setElapsedSeconds((s) => s + 1);
-    }, 1000);
-    elapsedRef.current = tickInterval;
-
     const stages = [
-      "Sending problem to solver…",
-      "Building constraint graph…",
-      "Applying arc consistency (AC-3)…",
-      "Running backtracking search…",
       "Propagating domain reductions…",
+      "Running backtracking search…",
+      "Applying arc consistency (AC-3)…",
       "Evaluating soft constraints…",
+      "Large Neighbourhood Search (LNS)…",
       "Assigning invigilators (greedy)…",
       "Validating solution integrity…",
     ];
     let si = 0;
-    setSolverStage(stages[0]);
-    const stageInterval = setInterval(() => {
-      si = (si + 1) % stages.length;
-      setSolverStage(stages[si]);
-    }, 900);
-    stageRef.current = stageInterval;
 
-    try {
-      let response;
+    // ── Build URL + body (same routing logic as before) ──────────────────
+    let url;
+    let fetchInit;
 
-      // Helper: build a full instance payload for the generic /solve path.
-      // Used when timeslots have been edited OR for the upload source.
-      const buildInstancePayload = () => {
-        // Generate timeslots from the user-edited dimensions
-        const newTimeslots = generateTimeslots(editDays, editPeriods);
-        const newTimeslotIds = new Set(newTimeslots.map((ts) => ts.id));
-
-        return {
-          exams: problemData.exams.map((e) => ({
-            id: e.id,
-            student_ids: Array.from({ length: e.studentCount }, (_, i) => i),
-            lecturer_id: e.lecturer_id ?? 0,
-            required_invigilators: e.required_invigilators ?? 1,
-            code: e.code,
-            name: e.name,
-          })),
-          timeslots: newTimeslots,
-          rooms: problemData.rooms.map((r) => ({
-            id: r.id,
-            capacity: r.capacity,
-            label: r.label,
-          })),
-          instructors: problemData.instructors.map((inst) => {
-            // Rebuild preferences keyed to new timeslot IDs.
-            // Carry over existing preferences where the ID still exists;
-            // default new timeslot IDs to true (no penalty).
-            const oldPrefs = inst.preferences ?? {};
-            const prefs = {};
-            for (const ts of newTimeslots) {
-              const key = String(ts.id);
-              prefs[key] = key in oldPrefs ? oldPrefs[key] : true;
-            }
-            return {
-              id: inst.id,
-              is_phd: inst.is_phd,
-              preferences: prefs,
-              name: inst.name,
-            };
-          }),
-        };
+    const buildInstancePayload = () => {
+      const newTimeslots = generateTimeslots(editDays, editPeriods);
+      return {
+        exams: problemData.exams.map((e) => ({
+          id: e.id,
+          student_ids: Array.from({ length: e.studentCount }, (_, i) => i),
+          lecturer_id: e.lecturer_id ?? 0,
+          required_invigilators: e.required_invigilators ?? 1,
+          code: e.code,
+          name: e.name,
+        })),
+        timeslots: newTimeslots,
+        rooms: problemData.rooms.map((r) => ({ id: r.id, capacity: r.capacity, label: r.label })),
+        instructors: problemData.instructors.map((inst) => {
+          const oldPrefs = inst.preferences ?? {};
+          const prefs = {};
+          for (const ts of newTimeslots) {
+            const key = String(ts.id);
+            prefs[key] = key in oldPrefs ? oldPrefs[key] : true;
+          }
+          return { id: inst.id, is_phd: inst.is_phd, preferences: prefs, name: inst.name };
+        }),
       };
+    };
 
-      // When the user has modified timeslot dimensions, ALL sources
-      // are routed through the generic /solve path so the override
-      // takes effect.  Otherwise, keep the original benchmark paths.
-      if (timeslotsModified || (activeSource === "upload" && uploadedInstancePayload)) {
-        const instanceForSolver = buildInstancePayload();
+    if (timeslotsModified || (activeSource === "upload" && uploadedInstancePayload)) {
+      url = `${API_BASE_URL}/solve`;
+      fetchInit = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instance: buildInstancePayload(), config: solverConfig }),
+      };
+    } else if (activeSource === "okan") {
+      url = `${API_BASE_URL}/benchmark/okan/solve`;
+      fetchInit = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: solverConfig }),
+      };
+    } else {
+      url = `${API_BASE_URL}/benchmark/carter/solve`;
+      fetchInit = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataset: selectedDataset, config: solverConfig }),
+      };
+    }
 
-        response = await fetch(`${API_BASE_URL}/solve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            instance: instanceForSolver,
-            config: solverConfig,
-          }),
-        });
-
-      } else if (activeSource === "okan") {
-        response = await fetch(`${API_BASE_URL}/benchmark/okan/solve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config: solverConfig }),
-        });
-
-      } else {
-        // Carter (default)
-        response = await fetch(`${API_BASE_URL}/benchmark/carter/solve`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dataset: selectedDataset,
-            config: solverConfig,
-          }),
-        });
-      }
+    // ── Stream SSE response ───────────────────────────────────────────────
+    try {
+      const response = await fetch(url, fetchInit);
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "");
@@ -1643,49 +1816,116 @@ export default function App() {
         );
       }
 
-      const data = await response.json();
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = "";
 
-      if (data.instance) {
-        setProblemData(data.instance);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop(); // keep trailing incomplete chunk
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+          let msg;
+          try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+
+          // Phase 1: model building in progress — overlay stays amber
+          if (msg.event === "preparing") {
+            setSolverPhase("preparing");
+          }
+
+          // Phase 2: CP-SAT search begins — start the timer NOW
+          if (msg.event === "solver_started") {
+            setSolverPhase("solving");
+            setElapsedSeconds(0);
+
+            if (elapsedRef.current) clearInterval(elapsedRef.current);
+            elapsedRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+
+            if (stageRef.current) clearInterval(stageRef.current);
+            setSolverStage(stages[0]);
+            stageRef.current = setInterval(() => {
+              si = (si + 1) % stages.length;
+              setSolverStage(stages[si]);
+            }, 900);
+          }
+
+          // Phase 3: solve complete
+          if (msg.event === "result") {
+            clearInterval(elapsedRef.current);
+            clearInterval(stageRef.current);
+            elapsedRef.current = null;
+            stageRef.current   = null;
+
+            if (msg.instance) setProblemData(msg.instance);
+
+            if (msg.status === "failed" || msg.status === "infeasible") {
+              setSolverResult({ failed: true });
+              showToast("error", "Solver Failed", msg.message || "Could not find a feasible solution.", 10000);
+            } else {
+              const normalizedSolution = normalizeSolution(msg.solution);
+              const instanceExams = msg.instance?.exams || problemData?.exams || [];
+              const placedIds = new Set(Object.keys(normalizedSolution.exam_time).map(Number));
+              const unassigned = instanceExams.map((e) => e.id).filter((id) => !placedIds.has(id));
+              const stats = msg.stats || {};
+
+              setSolverResult({
+                failed:         false,
+                solution:       normalizedSolution,
+                unassigned,
+                // Summary row
+                hardViolations: stats.hard_violations  ?? 0,
+                softPenalty:    stats.soft_penalty     ?? 0,
+                objective:      stats.objective        ?? null,
+                solverStatus:   stats.solver_status    ?? null,
+                // Timing — solve_time = pure search time (matches overlay timer)
+                solveTime:      stats.solve_time       ?? null,
+                setupTime:      stats.setup_time       ?? null,
+                searchTime:     stats.search_time      ?? null,
+                totalTime:      stats.total_time       ?? null,
+                // S1–S4 raw counts
+                s1Penalty:      stats.s1_penalty       ?? 0,
+                s1Weighted:     stats.s1_weighted      ?? 0,
+                s2Gap:          stats.s2_gap           ?? 0,
+                s2Max:          stats.s2_max           ?? null,
+                s2Min:          stats.s2_min           ?? null,
+                s2Weighted:     stats.s2_weighted      ?? 0,
+                s3Penalty:      stats.s3_penalty       ?? 0,
+                s3Weighted:     stats.s3_weighted      ?? 0,
+                s4Penalty:      stats.s4_penalty       ?? 0,
+                s4Weighted:     stats.s4_weighted      ?? 0,
+                // Room metrics
+                physicalRoomsUsed: stats.physical_rooms_used ?? 0,
+                overflowCount:  stats.overflow_count   ?? 0,
+                overflowPenalty: stats.overflow_penalty ?? 0,
+                // Weights echo (for badge labels in OptimizationStatsPanel)
+                weights: {
+                  w1: stats.w1 ?? solverConfig.w1,
+                  w2: stats.w2 ?? solverConfig.w2,
+                  w3: stats.w3 ?? solverConfig.w3,
+                  w4: stats.w4 ?? solverConfig.w4,
+                },
+              });
+
+              const violationMsg = (stats.hard_violations ?? 0) === 0
+                ? "All hard constraints satisfied."
+                : `${stats.hard_violations} hard constraint violation(s) detected.`;
+              showToast("success", "Solution Found", violationMsg);
+            }
+            break;
+          }
+        }
       }
-
-      if (data.status === "failed" || data.status === "infeasible") {
-        setSolverResult({ failed: true });
-        showToast(
-          "error",
-          "Solver Failed",
-          data.message || "Could not find a feasible solution.",
-          10000
-        );
-        return;
-      }
-
-      const normalizedSolution = normalizeSolution(data.solution);
-
-      const instanceExams = data.instance?.exams || problemData?.exams || [];
-      const placedIds = new Set(Object.keys(normalizedSolution.exam_time).map(Number));
-      const unassigned = instanceExams
-        .map((e) => e.id)
-        .filter((id) => !placedIds.has(id));
-
-      const stats = data.stats || {};
-
-      setSolverResult({
-        failed: false,
-        solution: normalizedSolution,
-        unassigned,
-        hardViolations: stats.hard_violations ?? 0,
-        softPenalty: stats.soft_penalty ?? stats.penalty ?? 0,
-        objective: stats.objective ?? null,
-        solveTime: stats.solve_time ?? null,
-      });
-
-      const violationMsg = (stats.hard_violations ?? 0) === 0
-        ? "All hard constraints satisfied."
-        : `${stats.hard_violations} hard constraint violation(s) detected.`;
-      showToast("success", "Solution Found", violationMsg);
-
     } catch (err) {
+      clearInterval(elapsedRef.current);
+      clearInterval(stageRef.current);
+      elapsedRef.current = null;
+      stageRef.current   = null;
       setSolverResult(null);
       const isNetworkError = err instanceof TypeError && err.message === "Failed to fetch";
       if (isNetworkError) {
@@ -1694,10 +1934,6 @@ export default function App() {
         showToast("error", "Solver Error", err.message || "An unexpected error occurred.", 10000);
       }
     } finally {
-      clearInterval(tickInterval);
-      clearInterval(stageInterval);
-      elapsedRef.current = null;
-      stageRef.current = null;
       setSolverRunning(false);
     }
   }, [dataLoaded, activeSource, selectedDataset, solverConfig, problemData, uploadedInstancePayload, editDays, editPeriods, timeslotsModified, dismissToast, showToast]);
@@ -1841,12 +2077,13 @@ export default function App() {
 
           {/* ── SOLVER STATS ROW ── */}
           {hasSolution && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 anim-fade-up">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 anim-fade-up">
               <StatCard
                 icon={Target}
                 label="Objective"
-                value={solverResult.objective != null ? solverResult.objective : "—"}
+                value={solverResult.objective != null ? solverResult.objective.toLocaleString() : "—"}
                 accent="cyan"
+                subtitle={solverResult.solverStatus ?? undefined}
               />
               <StatCard
                 icon={AlertTriangle}
@@ -1855,16 +2092,11 @@ export default function App() {
                 accent={solverResult.hardViolations === 0 ? "emerald" : "rose"}
               />
               <StatCard
-                icon={BarChart3}
-                label="Soft Penalty"
-                value={solverResult.softPenalty}
-                accent="amber"
-              />
-              <StatCard
                 icon={Timer}
-                label="Solve Time"
+                label="Search Time"
                 value={solverResult.solveTime != null ? `${solverResult.solveTime.toFixed(2)}s` : `${elapsedSeconds}s`}
                 accent="violet"
+                subtitle={solverResult.setupTime != null ? `+${solverResult.setupTime.toFixed(2)}s model build` : undefined}
               />
             </div>
           )}
@@ -1915,7 +2147,12 @@ export default function App() {
                 </div>
               </div>
 
+              {/* ── OPTIMIZATION STATS PANEL ── */}
               <div className="anim-fade-up anim-d2">
+                <OptimizationStatsPanel result={solverResult} />
+              </div>
+
+              <div className="anim-fade-up anim-d3">
                 <div className="flex items-center gap-2 mb-3">
                   <h2 className="text-sm font-semibold text-slate-800">Schedule Grid</h2>
                   <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">
@@ -1931,11 +2168,11 @@ export default function App() {
                 />
               </div>
 
-              <div className="anim-fade-up anim-d3">
+              <div className="anim-fade-up anim-d4">
                 <UnassignedPool examIds={solverResult.unassigned} exams={problemData.exams} />
               </div>
 
-              <div className="anim-fade-up anim-d4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="anim-fade-up anim-d5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3">Exam Legend</h3>
                 <div className="flex flex-wrap gap-2">
                   {problemData.exams.map((exam) => {
@@ -1956,7 +2193,7 @@ export default function App() {
               </div>
 
               {/* ── INSTRUCTOR WORKLOAD ── */}
-              <div className="anim-fade-up anim-d5">
+              <div className="anim-fade-up" style={{ animationDelay: ".36s" }}>
                 <WorkloadPanel
                   solution={solverResult.solution}
                   instructors={problemData.instructors}
@@ -1978,7 +2215,7 @@ export default function App() {
         onDatasetChange={setSelectedDataset}
         activeSource={activeSource}
       />
-      {solverRunning && <SolverOverlay elapsedSeconds={elapsedSeconds} stage={solverStage} />}
+      {solverRunning && <SolverOverlay elapsedSeconds={elapsedSeconds} stage={solverStage} phase={solverPhase} />}
       <Toast toast={toast} onDismiss={dismissToast} />
     </>
   );
