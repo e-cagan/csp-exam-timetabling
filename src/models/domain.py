@@ -21,6 +21,7 @@ Design decisions:
 """
 
 from __future__ import annotations
+import warnings
 from dataclasses import dataclass
 
 
@@ -46,7 +47,8 @@ class Exam:
         lecturer_id: ID of the responsible instructor. Must exist in ProblemInstance.instructors.
                      Used by H4 to prevent dual-role scheduling conflicts.
         required_invigilators: Number of proctors needed. Typically 1 per 40 students.
-                               Must be >= 1 for physical exams, can be 0 for online exams.
+                               Can be 0 for online exams; physical exams with 0 emit a
+                               warning and allow the solver to handle resource allocation.
         is_online: If True, exam is routed to virtual room with 0 invigilators.
                    Set by parser for weekend exams or explicitly marked online exams.
     """
@@ -62,13 +64,15 @@ class Exam:
         if self.required_invigilators < 0:
             raise ValueError("There can't be negative invigilators.")
 
-        # Physical exams MUST have at least 1 invigilator.
-        # Online exams are allowed to have 0 (no physical proctoring).
-        # This distinction is critical for H6 and S2 workload calculations.
+        # Physical exams with zero invigilators are unusual but not fatal.
+        # Emit a warning and let the solver handle resource allocation rather
+        # than crashing the request with a 422 before the solver is even reached.
         if self.required_invigilators == 0 and not self.is_online:
-            raise ValueError(
-                "Physical exams must have at least one invigilator "
-                "to proceed through examination."
+            warnings.warn(
+                f"Exam {self.id} is a physical exam with 0 required invigilators. "
+                "The solver will handle resource allocation.",
+                UserWarning,
+                stacklevel=2,
             )
 
         # An exam without students is meaningless — likely a parser error

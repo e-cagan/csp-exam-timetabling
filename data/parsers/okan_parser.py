@@ -184,7 +184,9 @@ def parse_okan(
             
         meta = exams_metadata.get(course_code, {"is_online": False, "lecturer_id": 0})
         
-        # YENİ MANTIK: Online ise 0 gözetmen, fiziksel ise 40 kişiye 1 gözetmen!
+        # Online exams get 0 invigilators; physical exams get at least 1 (1 per 40 students).
+        # max(1, ...) guarantees physical exams always have a non-zero baseline so the
+        # solver has something to work with even when the instructor pool is tight.
         if meta["is_online"]:
             req_invig = 0
         else:
